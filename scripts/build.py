@@ -168,7 +168,8 @@ def build_v8_path(platform: str, arch: str, config: str,
     env = env_with_depot_tools()
     run(["gn", "gen", gn_out, "--root-target=//napi:default"],
         cwd=str(V8_DIR), env=env)
-    run(["ninja", "-C", gn_out, "phony/napi/default", "phony/napi/test"],
+    run(["ninja", "-C", gn_out, "phony/napi/default",
+         "phony/napi/test", "phony/napi/test/test"],
         cwd=str(V8_DIR), env=env)
 
     # Mirror artifacts to repo's out/build/.
@@ -179,9 +180,10 @@ def build_v8_path(platform: str, arch: str, config: str,
         src = gn_out_abs / name
         if src.exists():
             shutil.copy2(src, dist / name)
-    test_bin = gn_out_abs / "run"
-    if test_bin.exists():
-        shutil.copy2(test_bin, dist / "run")
+    for name in ("run", "runner"):
+        src = gn_out_abs / name
+        if src.exists():
+            shutil.copy2(src, dist / name)
 
     print(f"\n[done] artifacts -> {dist}")
     if package:

@@ -1,15 +1,15 @@
 // Public C entry points declared in napi_v8/inspector.h, backed by
 // InspectorBridge.
 
+#define NAPI_EXPERIMENTAL
+#include "napi/js_native_api.h"
+#include "js_native_api_v8.h"
 #include "bridge.h"
 
 #include <map>
 #include <mutex>
 
-#include "js_native_api_v8.h"
-
 extern "C" {
-#include "napi/js_native_api.h"
 #include "napi_v8/inspector.h"
 }
 
