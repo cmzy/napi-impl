@@ -63,6 +63,22 @@ def main():
         env["SIMCTL_CHILD_DYLD_LIBRARY_PATH"] = str(runner.parent)
         sim_prefix = ["xcrun", "simctl", "spawn", "booted"]
 
+    # Android: push everything once to /data/local/tmp/napi and shell via adb.
+    android_dev = None
+    if args.platform == "android":
+        adb = os.environ.get("ANDROID_ADB") or str(
+            Path.home() / "Android/Sdk/platform-tools/adb")
+        android_dev = "/data/local/tmp/napi"
+        subprocess.run([adb, "shell", "rm", "-rf", android_dev], check=False)
+        subprocess.run([adb, "shell", "mkdir", "-p", android_dev], check=True)
+        subprocess.run([adb, "push",
+                        str(runner.parent / "libnapi_v8.so"), android_dev],
+                       check=True, capture_output=True)
+        subprocess.run([adb, "push", str(runner), android_dev],
+                       check=True, capture_output=True)
+        subprocess.run([adb, "shell", "chmod", "755",
+                        f"{android_dev}/runner"], check=True)
+
     passed, failed, skipped = [], [], []
 
     for d in sorted(TESTS.iterdir()):
@@ -76,7 +92,20 @@ def main():
             continue
         for tjs in list_tests(d):
             tag = f"{d.name}/{tjs.name}"
-            cmd = [*sim_prefix, str(runner), str(so), d.name, str(tjs)]
+            if android_dev is not None:
+                # Push binding + test, then adb shell.
+                subprocess.run([adb, "push", str(so), android_dev],
+                               check=True, capture_output=True)
+                subprocess.run([adb, "push", str(tjs), android_dev],
+                               check=True, capture_output=True)
+                remote = (
+                    f"cd {android_dev} && LD_LIBRARY_PATH={android_dev} "
+                    f"./runner {android_dev}/{so.name} {d.name} "
+                    f"{android_dev}/{tjs.name}"
+                )
+                cmd = [adb, "shell", remote]
+            else:
+                cmd = [*sim_prefix, str(runner), str(so), d.name, str(tjs)]
             try:
                 r = subprocess.run(
                     cmd, capture_output=True, text=True,
