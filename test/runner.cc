@@ -17,7 +17,13 @@
 #include <spawn.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#if defined(__APPLE__)
 #include <crt_externs.h>   // _NSGetEnviron() on macOS
+#define NAPI_RUNNER_ENVIRON (*_NSGetEnviron())
+#else
+extern "C" char** environ;
+#define NAPI_RUNNER_ENVIRON environ
+#endif
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -174,7 +180,7 @@ static napi_value JsSpawnSync(napi_env env, napi_callback_info info) {
   posix_spawn_file_actions_addclose(&fa, err_pipe[1]);
 
   int sp = posix_spawn(&pid, g_ctx.runner_exe.c_str(), &fa, nullptr,
-                       raw_argv.data(), *_NSGetEnviron());
+                       raw_argv.data(), NAPI_RUNNER_ENVIRON);
   posix_spawn_file_actions_destroy(&fa);
 
   close(out_pipe[1]);
