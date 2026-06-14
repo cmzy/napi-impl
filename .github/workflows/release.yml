@@ -1,0 +1,251 @@
+name: Release Build
+
+# Triggers:
+#   - A pushed tag matching v*  (most common)
+#   - A published GitHub Release
+#   - Manual dispatch for testing
+on:
+  push:
+    tags: ['v*']
+  release:
+    types: [created, published]
+  workflow_dispatch:
+
+# All jobs upload artifacts; the release job collects them and posts to the
+# release / tag.
+
+jobs:
+  apple:
+    name: macOS + iOS xcframework
+    runs-on: macos-14   # arm64 Mac runner; needed for arm64 macOS slice
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: System python
+        uses: actions/setup-python@v5
+        with: { python-version: '3.12' }
+
+      - name: Install PyYAML
+        run: pip install pyyaml
+
+      - name: Cache V8 source
+        uses: actions/cache@v4
+        with:
+          path: |
+            third_party/depot_tools
+            third_party/v8
+            third_party/llhttp
+            third_party/node_ref
+          key: v8-apple-${{ hashFiles('V8_VERSION', 'config/v8_args.yml', 'DEPS', 'scripts/setup.py') }}
+
+      - name: Setup (V8 + headers + tests)
+        run: python3 scripts/setup.py
+
+      - name: Build mac arm64
+        run: python3 scripts/build.py --platform=mac --arch=arm64
+
+      - name: Build mac x86_64
+        run: python3 scripts/build.py --platform=mac --arch=x86_64
+
+      - name: Build iOS arm64 (device)
+        run: python3 scripts/build.py --platform=ios --arch=arm64
+
+      - name: Build iOS simulator arm64
+        run: python3 scripts/build.py --platform=ios_sim --arch=arm64
+
+      - name: Build iOS simulator x86_64
+        run: python3 scripts/build.py --platform=ios_sim --arch=x86_64
+
+      - name: Assemble xcframework
+        run: python3 scripts/package_apple.py --version=${GITHUB_REF_NAME#v}
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: NapiV8.xcframework
+          path: out/dist/NapiV8.xcframework
+
+  linux:
+    name: Linux x64 cmake package
+    runs-on: ubuntu-22.04
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12' }
+
+      - name: Install deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            git curl python3 python3-pip pkg-config build-essential \
+            libglib2.0-dev libgtk-3-dev libnss3 libx11-xcb1
+          pip install pyyaml
+
+      - name: Cache V8 source
+        uses: actions/cache@v4
+        with:
+          path: |
+            third_party/depot_tools
+            third_party/v8
+            third_party/llhttp
+            third_party/node_ref
+          key: v8-linux-${{ hashFiles('V8_VERSION', 'config/v8_args.yml', 'DEPS', 'scripts/setup.py') }}
+
+      - name: Setup
+        run: python3 scripts/setup.py
+
+      - name: Build linux x64
+        run: python3 scripts/build.py --platform=linux --arch=x64
+
+      - name: Package
+        run: python3 scripts/package_cmake.py --platform=linux --arch=x64 --version=${GITHUB_REF_NAME#v}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: napi-v8-linux-x64
+          path: out/dist/napi-v8-linux-x64.tar.gz
+
+  android:
+    name: Android AAR (arm64 + x86_64)
+    runs-on: ubuntu-22.04
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12' }
+
+      - name: Install deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            git curl python3 python3-pip pkg-config build-essential
+          pip install pyyaml
+
+      - name: Setup Android NDK
+        id: setup_ndk
+        uses: nttld/setup-ndk@v1
+        with:
+          ndk-version: r26d
+          local-cache: true
+
+      - name: Cache V8 source
+        uses: actions/cache@v4
+        with:
+          path: |
+            third_party/depot_tools
+            third_party/v8
+            third_party/llhttp
+            third_party/node_ref
+          key: v8-android-${{ hashFiles('V8_VERSION', 'config/v8_args.yml', 'DEPS', 'scripts/setup.py') }}
+
+      - name: Add android target_os
+        run: |
+          mkdir -p third_party
+          cat > third_party/.gclient <<EOF
+          solutions = [
+            {
+              "name": "v8",
+              "url": "https://chromium.googlesource.com/v8/v8.git",
+              "deps_file": "DEPS",
+              "managed": False,
+              "custom_deps": {},
+              "custom_vars": {},
+            },
+          ]
+          target_os = ["android", "linux"]
+          EOF
+
+      - name: Setup
+        run: python3 scripts/setup.py
+
+      - name: Build android arm64
+        run: python3 scripts/build.py --platform=android --arch=arm64
+
+      - name: Build android x86_64
+        run: python3 scripts/build.py --platform=android --arch=x86_64
+
+      - name: Package AAR
+        env:
+          ANDROID_NDK_ROOT: ${{ steps.setup_ndk.outputs.ndk-path }}
+        run: python3 scripts/package_android.py --version=${GITHUB_REF_NAME#v}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: napi-v8.aar
+          path: out/dist/napi-v8.aar
+
+  windows:
+    name: Windows x64 prebuilt
+    runs-on: windows-2022
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12' }
+
+      - name: Install PyYAML
+        run: pip install pyyaml
+
+      - name: Cache V8 source
+        uses: actions/cache@v4
+        with:
+          path: |
+            third_party/depot_tools
+            third_party/v8
+            third_party/llhttp
+            third_party/node_ref
+          key: v8-windows-${{ hashFiles('V8_VERSION', 'config/v8_args.yml', 'DEPS', 'scripts/setup.py') }}
+
+      - name: Setup
+        env:
+          DEPOT_TOOLS_WIN_TOOLCHAIN: '0'
+        run: python scripts/setup.py
+        shell: cmd
+
+      - name: Build windows x64
+        env:
+          DEPOT_TOOLS_WIN_TOOLCHAIN: '0'
+        run: python scripts/build.py --platform=windows --arch=x64
+        shell: cmd
+
+      - name: Package
+        run: python scripts/package_cmake.py --platform=windows --arch=x64 --version=%GITHUB_REF_NAME:~1%
+        shell: cmd
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: napi-v8-windows-x64
+          path: out/dist/napi-v8-windows-x64.zip
+
+  release:
+    name: Attach to release
+    needs: [apple, linux, android, windows]
+    if: github.event_name == 'release' || startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+
+      - name: Re-zip apple xcframework
+        run: |
+          cd dist
+          (cd NapiV8.xcframework && zip -r ../NapiV8.xcframework.zip .)
+
+      - name: Publish artifacts to release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          files: |
+            dist/NapiV8.xcframework.zip
+            dist/napi-v8-linux-x64/napi-v8-linux-x64.tar.gz
+            dist/napi-v8.aar/napi-v8.aar
+            dist/napi-v8-windows-x64/napi-v8-windows-x64.zip
+          fail_on_unmatched_files: false
