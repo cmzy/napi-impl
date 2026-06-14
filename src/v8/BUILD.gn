@@ -14,11 +14,6 @@ shared_library("napi_v8") {
     "//:v8_monolith",
     "//third_party/rust/temporal_capi:temporal_capi",
   ]
-  if (is_linux || is_android) {
-    # Linux v8_monolith.a duplicates the Rust allocator helpers from
-    # temporal_capi; let lld tolerate the multiple definitions.
-    ldflags += [ "-Wl,--allow-multiple-definition" ]
-  }
 
   if (is_apple) {
     output_name = "NapiV8"
@@ -31,6 +26,9 @@ shared_library("napi_v8") {
     ldflags = [
       "-Wl,--version-script=" +
           rebase_path("//napi/gn/exports/napi_v8.lds", root_build_dir),
+      # v8_monolith.a and temporal_capi both contain the Rust allocator
+      # helpers; let lld tolerate duplicates rather than picking sides.
+      "-Wl,--allow-multiple-definition",
     ]
   } else if (is_win) {
     output_name = "napi_v8"
