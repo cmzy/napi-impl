@@ -13,6 +13,13 @@
 
 #include "v8-persistent-handle.h"
 
+// With -fmodules, macros defined in a header included as a module are not
+// always visible at the consuming TU; redefine here to make our impl headers
+// usable regardless of module layout.
+#ifndef NAPI_VERSION_EXPERIMENTAL
+#define NAPI_VERSION_EXPERIMENTAL 2147483647
+#endif
+
 // NAPI_VERSION lives in js_native_api_types.h.
 // Define version range constants Node uses but that are part of node_version.h.
 #ifndef NODE_API_DEFAULT_MODULE_API_VERSION
