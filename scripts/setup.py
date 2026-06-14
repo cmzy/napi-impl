@@ -72,7 +72,7 @@ def step_depot_tools():
 
 def env_with_depot_tools() -> dict:
     e = os.environ.copy()
-    e["PATH"] = f"{DEPOT_TOOLS}:{e.get('PATH', '')}"
+    e["PATH"] = f"{DEPOT_TOOLS}{os.pathsep}{e.get('PATH', '')}"
     # Note: don't set DEPOT_TOOLS_UPDATE=0 here — it gates the bootstrap
     # path lookup too.
     e["DEPOT_TOOLS_WIN_TOOLCHAIN"] = "0"

@@ -137,7 +137,7 @@ def args_to_gn(args: dict) -> str:
 
 def env_with_depot_tools() -> dict:
     e = os.environ.copy()
-    e["PATH"] = f"{DEPOT_TOOLS}:{e.get('PATH', '')}"
+    e["PATH"] = f"{DEPOT_TOOLS}{os.pathsep}{e.get('PATH', '')}"
     # Note: do NOT set DEPOT_TOOLS_UPDATE=0 — depot_tools needs to bootstrap
     # its python3_bin_reldir.txt on first use, and that path is gated by the
     # same flag as updates.

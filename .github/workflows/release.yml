@@ -41,20 +41,22 @@ jobs:
       - name: Setup (V8 + headers + tests)
         run: python3 scripts/setup.py
 
+      # macOS 15.5 SDK on the runner doesn't ship DarwinFoundation*.modulemap
+      # files that V8's bundled libc++ references; use the system libc++ in CI.
       - name: Build mac arm64
-        run: python3 scripts/build.py --platform=mac --arch=arm64
+        run: python3 scripts/build.py --platform=mac --arch=arm64 --gn-arg use_custom_libcxx=false
 
       - name: Build mac x86_64
-        run: python3 scripts/build.py --platform=mac --arch=x86_64
+        run: python3 scripts/build.py --platform=mac --arch=x86_64 --gn-arg use_custom_libcxx=false
 
       - name: Build iOS arm64 (device)
-        run: python3 scripts/build.py --platform=ios --arch=arm64
+        run: python3 scripts/build.py --platform=ios --arch=arm64 --gn-arg use_custom_libcxx=false
 
       - name: Build iOS simulator arm64
-        run: python3 scripts/build.py --platform=ios_sim --arch=arm64
+        run: python3 scripts/build.py --platform=ios_sim --arch=arm64 --gn-arg use_custom_libcxx=false
 
       - name: Build iOS simulator x86_64
-        run: python3 scripts/build.py --platform=ios_sim --arch=x86_64
+        run: python3 scripts/build.py --platform=ios_sim --arch=x86_64 --gn-arg use_custom_libcxx=false
 
       - name: Assemble xcframework
         run: python3 scripts/package_apple.py --version=${GITHUB_REF_NAME#v}
