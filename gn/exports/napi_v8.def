@@ -129,5 +129,6 @@ EXPORTS
   node_api_create_property_key_utf16
   node_api_create_property_key_utf8
   node_api_create_syntax_error
+  node_api_post_finalizer
   node_api_symbol_for
   node_api_throw_syntax_error

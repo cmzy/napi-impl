@@ -34,6 +34,8 @@ EMBEDDING_SYMBOLS = [
     "napi_v8_inspector_start",
     "napi_v8_inspector_stop",
     "napi_v8_inspector_wait_for_connection",
+    # node_api_* extensions we implement beyond js_native_api proper.
+    "node_api_post_finalizer",
 ]
 
 
