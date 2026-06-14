@@ -147,6 +147,12 @@ def env_with_depot_tools() -> dict:
 
 def run(cmd, **kw):
     print(f"$ {' '.join(str(c) for c in cmd)}", flush=True)
+    # See scripts/setup.py for why Windows needs shell=True with .bat shims.
+    if sys.platform == "win32" and isinstance(cmd, list):
+        kw.setdefault("shell", True)
+        subprocess.check_call(
+            subprocess.list2cmdline([str(c) for c in cmd]), **kw)
+        return
     subprocess.check_call(cmd, **kw)
 
 

@@ -35,6 +35,14 @@ V8_URL = "https://chromium.googlesource.com/v8/v8.git"
 
 def run(cmd, **kw):
     print(f"$ {' '.join(str(c) for c in cmd)}", flush=True)
+    # On Windows, depot_tools' shims (gclient, gn) are .bat files; Python's
+    # subprocess won't find them without shell or .bat extension. Convert to a
+    # string command and use shell=True so cmd.exe handles PATHEXT resolution.
+    if sys.platform == "win32" and isinstance(cmd, list):
+        kw.setdefault("shell", True)
+        subprocess.check_call(
+            subprocess.list2cmdline([str(c) for c in cmd]), **kw)
+        return
     subprocess.check_call(cmd, **kw)
 
 
