@@ -20,6 +20,9 @@ common:
   # bundled libc++ here because we expose only a C ABI — no C++ objects
   # cross the napi_* boundary, libc++ symbols stay hidden by -fvisibility.
   use_custom_libcxx: true
+  # macOS 15.5 SDK is missing DarwinFoundation*.modulemap files V8's bundled
+  # libc++ references; disable clang modules to fall back to plain includes.
+  use_libcxx_modules: false
   treat_warnings_as_errors: false
   symbol_level: 1
   v8_enable_i18n_support: false   # trim binary size; opt in if needed
