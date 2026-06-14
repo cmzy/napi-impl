@@ -108,6 +108,15 @@ def main():
         # R.txt (empty)
         (work / "R.txt").write_text("")
 
+        # BUILD_INFO.md at AAR root.
+        platforms = [f"android/{arch}" for (_, arch), _ in ABI_MAP.items()
+                     if build_dir("android", arch).is_dir()]
+        subprocess.check_call([
+            sys.executable, str(ROOT / "scripts" / "gen_build_info.py"),
+            "--platforms", *platforms,
+            "--version", args.version,
+            "--out", str(work / "BUILD_INFO.md")])
+
         out_aar = DIST / "napi-v8.aar"
         if out_aar.exists():
             out_aar.unlink()

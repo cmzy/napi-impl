@@ -151,6 +151,18 @@ def main():
 
     run(["xcodebuild", "-create-xcframework",
          *slices, "-output", str(out_xcf)])
+
+    # Embed BUILD_INFO.md at the xcframework root for provenance.
+    platforms = []
+    for p in ("mac", "ios", "ios_sim"):
+        for a in ("arm64", "x86_64"):
+            if (build_dir(p, a) / "libNapiV8.dylib").exists():
+                platforms.append(f"{p}/{a}")
+    run([sys.executable, str(ROOT / "scripts" / "gen_build_info.py"),
+         "--platforms", *platforms,
+         "--version", args.version,
+         "--out", str(out_xcf / "BUILD_INFO.md")])
+
     shutil.rmtree(work, ignore_errors=True)
 
     print(f"\n[done] {out_xcf}")

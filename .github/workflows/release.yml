@@ -230,6 +230,7 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
           path: dist
@@ -239,10 +240,38 @@ jobs:
           cd dist
           (cd NapiV8.xcframework && zip -r ../NapiV8.xcframework.zip .)
 
+      - name: Compose release body from per-artifact BUILD_INFO.md
+        run: |
+          {
+            echo "## Artifacts"
+            echo ""
+            echo "| File | Platform |"
+            echo "| ---- | -------- |"
+            echo "| \`NapiV8.xcframework.zip\` | macOS + iOS (device + sim) |"
+            echo "| \`napi-v8-linux-x64.tar.gz\` | Linux x64 (CMake package) |"
+            echo "| \`napi-v8.aar\` | Android (arm64-v8a + x86_64, Prefab v2) |"
+            echo "| \`napi-v8-windows-x64.zip\` | Windows x64 (CMake package) |"
+            echo ""
+            for f in dist/NapiV8.xcframework/BUILD_INFO.md \
+                     dist/napi-v8-linux-x64/napi-v8-linux-x64/BUILD_INFO.md \
+                     dist/napi-v8.aar/BUILD_INFO.md \
+                     dist/napi-v8-windows-x64/napi-v8-windows-x64/BUILD_INFO.md; do
+              if [ -f "$f" ]; then
+                echo "---"
+                echo ""
+                cat "$f"
+                echo ""
+                break  # one BUILD_INFO is enough for the body; rest are inside artifacts
+              fi
+            done
+          } > RELEASE_BODY.md
+          cat RELEASE_BODY.md
+
       - name: Publish artifacts to release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
+          body_path: RELEASE_BODY.md
           files: |
             dist/NapiV8.xcframework.zip
             dist/napi-v8-linux-x64/napi-v8-linux-x64.tar.gz

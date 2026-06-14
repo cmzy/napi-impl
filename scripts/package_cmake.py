@@ -106,6 +106,14 @@ def main():
     (pkg / "cmake" / "napi_v8-config-version.cmake").write_text(
         VERSION_TMPL.format(version=args.version))
 
+    # BUILD_INFO.md at package root.
+    import subprocess as _sp
+    _sp.check_call([
+        sys.executable, str(ROOT / "scripts" / "gen_build_info.py"),
+        "--platforms", f"{args.platform}/{args.arch}",
+        "--version", args.version,
+        "--out", str(pkg / "BUILD_INFO.md")])
+
     # Bundle tarball / zip
     if args.platform == "linux":
         out_tar = DIST / f"napi-v8-{args.platform}-{args.arch}.tar.gz"
