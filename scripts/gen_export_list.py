@@ -31,6 +31,9 @@ EMBEDDING_SYMBOLS = [
     "napi_destroy_runtime",
     "napi_create_env",
     "napi_destroy_env",
+    "napi_v8_inspector_start",
+    "napi_v8_inspector_stop",
+    "napi_v8_inspector_wait_for_connection",
 ]
 
 

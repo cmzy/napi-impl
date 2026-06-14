@@ -118,6 +118,9 @@ _napi_throw_type_error
 _napi_type_tag_object
 _napi_typeof
 _napi_unwrap
+_napi_v8_inspector_start
+_napi_v8_inspector_stop
+_napi_v8_inspector_wait_for_connection
 _napi_wrap
 _node_api_create_external_string_latin1
 _node_api_create_external_string_utf16
@@ -127,6 +130,3 @@ _node_api_create_property_key_utf8
 _node_api_create_syntax_error
 _node_api_symbol_for
 _node_api_throw_syntax_error
-_napi_v8_inspector_start
-_napi_v8_inspector_wait_for_connection
-_napi_v8_inspector_stop

@@ -119,6 +119,9 @@ EXPORTS
   napi_type_tag_object
   napi_typeof
   napi_unwrap
+  napi_v8_inspector_start
+  napi_v8_inspector_stop
+  napi_v8_inspector_wait_for_connection
   napi_wrap
   node_api_create_external_string_latin1
   node_api_create_external_string_utf16
