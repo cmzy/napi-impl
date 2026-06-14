@@ -4,9 +4,6 @@
 # All build outputs
 /out/
 
-# NAPI headers synced from upstream by scripts/sync_napi_headers.py
-/include/napi/
-
 # NAPI test suite synced from nodejs/node by scripts/sync_napi_tests.py
 /test/js-native-api/
 

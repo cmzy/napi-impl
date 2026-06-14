@@ -35,7 +35,6 @@ jobs:
           path: |
             third_party/depot_tools
             third_party/v8
-            third_party/llhttp
             third_party/node_ref
           key: v8-apple-${{ hashFiles('V8_VERSION', 'config/v8_args.yml', 'DEPS', 'scripts/setup.py') }}
 
@@ -90,7 +89,6 @@ jobs:
           path: |
             third_party/depot_tools
             third_party/v8
-            third_party/llhttp
             third_party/node_ref
           key: v8-linux-${{ hashFiles('V8_VERSION', 'config/v8_args.yml', 'DEPS', 'scripts/setup.py') }}
 
@@ -138,7 +136,6 @@ jobs:
           path: |
             third_party/depot_tools
             third_party/v8
-            third_party/llhttp
             third_party/node_ref
           key: v8-android-${{ hashFiles('V8_VERSION', 'config/v8_args.yml', 'DEPS', 'scripts/setup.py') }}
 
@@ -197,7 +194,6 @@ jobs:
           path: |
             third_party/depot_tools
             third_party/v8
-            third_party/llhttp
             third_party/node_ref
           key: v8-windows-${{ hashFiles('V8_VERSION', 'config/v8_args.yml', 'DEPS', 'scripts/setup.py') }}
 

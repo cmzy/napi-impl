@@ -2,11 +2,11 @@
 
 static_library("llhttp") {
   sources = [
-    "//napi/third_party/llhttp/src/api.c",
-    "//napi/third_party/llhttp/src/http.c",
-    "//napi/third_party/llhttp/src/llhttp.c",
+    "//napi/vendor/llhttp/src/api.c",
+    "//napi/vendor/llhttp/src/http.c",
+    "//napi/vendor/llhttp/src/llhttp.c",
   ]
-  include_dirs = [ "//napi/third_party/llhttp/include" ]
+  include_dirs = [ "//napi/vendor/llhttp/include" ]
   cflags = [
     "-Wno-everything",
   ]
@@ -14,7 +14,7 @@ static_library("llhttp") {
 }
 
 config("llhttp_public") {
-  include_dirs = [ "//napi/third_party/llhttp/include" ]
+  include_dirs = [ "//napi/vendor/llhttp/include" ]
 }
 
 source_set("inspector") {

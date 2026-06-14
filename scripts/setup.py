@@ -144,15 +144,26 @@ def step_symlink_into_v8():
 
 
 def step_sync_llhttp():
+    # llhttp is vendored under vendor/llhttp and tracked in git; no download
+    # needed. Kept as a no-op so older callers don't fail.
+    if (ROOT / "vendor" / "llhttp" / "src" / "llhttp.c").exists():
+        print("[skip] llhttp vendored at vendor/llhttp")
+        return
     llhttp = THIRD_PARTY / "llhttp"
     if (llhttp / ".git").is_dir():
-        print("[skip] llhttp already synced")
+        print("[skip] llhttp already synced (third_party)")
         return
     run(["git", "clone", "--depth=1", "--branch", "release/v9.2.1",
          "https://github.com/nodejs/llhttp.git", str(llhttp)])
 
 
 def step_sync_napi_headers():
+    # Headers are vendored in include/napi/ and tracked in git; skip the
+    # network sync unless explicitly requested via NAPI_FORCE_HEADER_SYNC=1.
+    if ((ROOT / "include" / "napi" / "js_native_api.h").exists()
+            and not os.environ.get("NAPI_FORCE_HEADER_SYNC")):
+        print("[skip] napi headers vendored at include/napi")
+        return
     run([sys.executable, str(ROOT / "scripts" / "sync_napi_headers.py")])
 
 

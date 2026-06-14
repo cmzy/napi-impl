@@ -41,6 +41,9 @@ def read_text(p: Path, default: str = "") -> str:
 
 
 def llhttp_tag() -> str:
+    # llhttp is vendored under vendor/llhttp; version pinned in this file.
+    if (ROOT / "vendor" / "llhttp" / "src" / "llhttp.c").exists():
+        return "vendored release/v9.2.1"
     repo = ROOT / "third_party" / "llhttp"
     try:
         return subprocess.check_output(
