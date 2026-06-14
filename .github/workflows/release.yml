@@ -17,7 +17,7 @@ on:
 jobs:
   apple:
     name: macOS + iOS xcframework
-    runs-on: macos-14   # arm64 Mac runner; needed for arm64 macOS slice
+    runs-on: macos-15   # needs SDK 15+; arm64 Mac runner
     timeout-minutes: 360
     steps:
       - uses: actions/checkout@v4

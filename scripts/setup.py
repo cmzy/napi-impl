@@ -53,7 +53,10 @@ def step_depot_tools():
         run(["git", "clone", "--depth=1", DEPOT_TOOLS_URL, str(DEPOT_TOOLS)])
     # Bootstrap python3 inside depot_tools so the gn/ninja wrappers can find
     # their pinned interpreter (creates python3_bin_reldir.txt).
-    if not (DEPOT_TOOLS / "python3_bin_reldir.txt").exists():
+    if (not (DEPOT_TOOLS / "python3_bin_reldir.txt").exists()
+            and sys.platform != "win32"):
+        # Windows depot_tools self-bootstraps when gclient runs first; only
+        # POSIX hosts need the manual bash bootstrap.
         run(["/bin/bash", "-c",
              "source bootstrap_python3 && bootstrap_python3"],
             cwd=str(DEPOT_TOOLS))
