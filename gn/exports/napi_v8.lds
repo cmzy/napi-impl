@@ -120,9 +120,12 @@
     napi_type_tag_object;
     napi_typeof;
     napi_unwrap;
+    napi_v8_create_shared_arraybuffer;
+    napi_v8_get_shared_arraybuffer_info;
     napi_v8_inspector_start;
     napi_v8_inspector_stop;
     napi_v8_inspector_wait_for_connection;
+    napi_v8_is_shared_arraybuffer;
     napi_wrap;
     node_api_create_external_string_latin1;
     node_api_create_external_string_utf16;

@@ -34,6 +34,10 @@ EMBEDDING_SYMBOLS = [
     "napi_v8_inspector_start",
     "napi_v8_inspector_stop",
     "napi_v8_inspector_wait_for_connection",
+    # SharedArrayBuffer extensions (napi_v8/sab.h).
+    "napi_v8_create_shared_arraybuffer",
+    "napi_v8_is_shared_arraybuffer",
+    "napi_v8_get_shared_arraybuffer_info",
     # node_api_* extensions we implement beyond js_native_api proper.
     "node_api_post_finalizer",
 ]

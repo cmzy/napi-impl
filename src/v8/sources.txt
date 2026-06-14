@@ -10,6 +10,7 @@ internals.cc
 object.cc
 promise.cc
 reference.cc
+sab.cc
 scope.cc
 script.cc
 string.cc
