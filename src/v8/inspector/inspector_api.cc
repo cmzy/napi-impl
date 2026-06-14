@@ -2,9 +2,12 @@
 // InspectorBridge.
 
 #define NAPI_EXPERIMENTAL
-#include "bridge.h"
 #include "js_native_api_v8.h"
 #include "napi/js_native_api.h"
+
+#if !defined(_WIN32)
+#include "bridge.h"
+#endif
 
 #include <map>
 #include <mutex>
@@ -12,6 +15,19 @@
 extern "C" {
 #include "napi_v8/inspector.h"
 }
+
+#if defined(_WIN32)
+
+// Windows: POSIX socket inspector not ported; expose stubs that report failure.
+extern "C" napi_status NAPI_CDECL napi_v8_inspector_start(napi_env, int, const char *) {
+    return napi_generic_failure;
+}
+extern "C" napi_status NAPI_CDECL napi_v8_inspector_wait_for_connection(napi_env) {
+    return napi_generic_failure;
+}
+extern "C" napi_status NAPI_CDECL napi_v8_inspector_stop(napi_env) { return napi_ok; }
+
+#else
 
 namespace {
 
@@ -65,3 +81,5 @@ extern "C" napi_status NAPI_CDECL napi_v8_inspector_stop(napi_env env) {
     delete br;
     return napi_ok;
 }
+
+#endif  // !defined(_WIN32)

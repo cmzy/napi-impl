@@ -18,15 +18,19 @@ config("llhttp_public") {
 }
 
 source_set("inspector") {
-  sources = [
-    "bridge.cc",
-    "inspector_api.cc",
-    "server.cc",
-    "websocket.cc",
-  ]
-  deps = [
-    ":llhttp",
-  ]
+  sources = [ "inspector_api.cc" ]
+  if (!is_win) {
+    # POSIX socket + libuv-free server only on POSIX (Linux/macOS/Android).
+    sources += [
+      "bridge.cc",
+      "server.cc",
+      "websocket.cc",
+    ]
+  }
+  deps = []
+  if (!is_win) {
+    deps += [ ":llhttp" ]
+  }
   configs += [
     "//napi/gn:napi_flags",
     "//:external_config",
