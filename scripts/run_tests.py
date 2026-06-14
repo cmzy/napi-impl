@@ -23,6 +23,10 @@ def runner_bin(platform: str, arch: str, config: str) -> Path:
             / f"napi-{platform}-{arch}-{config}" / "runner")
 
 
+def binding_release_dir(platform: str) -> str:
+    return "Release" if platform == "mac" else f"Release_{platform}"
+
+
 def list_tests(d: Path):
     """All .js files starting with 'test' in the directory."""
     return sorted(p for p in d.iterdir()
@@ -51,6 +55,12 @@ def main():
     env["DYLD_LIBRARY_PATH"] = (
         str(runner.parent) + os.pathsep + env.get("DYLD_LIBRARY_PATH", ""))
 
+    # iOS sim: spawn through simctl, pass env via SIMCTL_CHILD_*.
+    sim_prefix: list[str] = []
+    if args.platform == "ios_sim":
+        env["SIMCTL_CHILD_DYLD_LIBRARY_PATH"] = str(runner.parent)
+        sim_prefix = ["xcrun", "simctl", "spawn", "booted"]
+
     passed, failed, skipped = [], [], []
 
     for d in sorted(TESTS.iterdir()):
@@ -58,13 +68,13 @@ def main():
             continue
         if args.filter and args.filter not in d.name:
             continue
-        so = d / "build" / "Release" / f"{d.name}.so"
+        so = d / "build" / binding_release_dir(args.platform) / f"{d.name}.so"
         if not so.exists():
             skipped.append((d.name, "binding not built"))
             continue
         for tjs in list_tests(d):
             tag = f"{d.name}/{tjs.name}"
-            cmd = [str(runner), str(so), d.name, str(tjs)]
+            cmd = [*sim_prefix, str(runner), str(so), d.name, str(tjs)]
             try:
                 r = subprocess.run(
                     cmd, capture_output=True, text=True,

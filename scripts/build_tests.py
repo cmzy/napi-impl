@@ -24,13 +24,17 @@ def lib_dir(platform: str, arch: str, config: str) -> Path:
     return ROOT / "third_party" / "v8" / "out" / f"napi-{platform}-{arch}-{config}"
 
 
-def build_one(feature_dir: Path, libdir: Path, dry_run: bool) -> bool:
+def build_one(feature_dir: Path, libdir: Path, dry_run: bool,
+              platform: str) -> bool:
     name = feature_dir.name
     sources = sorted(p for p in feature_dir.iterdir()
                      if p.suffix in (".c", ".cc"))
     if not sources:
         return False
-    out_dir = feature_dir / "build" / "Release"
+    # mac uses ./build/Release/ (Node convention so test.js can find it via
+    # common.buildType); other platforms use a platform-suffixed dir.
+    rel = "Release" if platform == "mac" else f"Release_{platform}"
+    out_dir = feature_dir / "build" / rel
     out_dir.mkdir(parents=True, exist_ok=True)
     out_so = out_dir / f"{name}.so"
 
@@ -39,9 +43,30 @@ def build_one(feature_dir: Path, libdir: Path, dry_run: bool) -> bool:
     if is_cpp:
         cxx = "clang++"
 
+    extra_flags = []
+    if "ios_sim" in str(libdir):
+        sdk = subprocess.run(
+            ["xcrun", "--sdk", "iphonesimulator", "--show-sdk-path"],
+            capture_output=True, text=True).stdout.strip()
+        extra_flags = [
+            "-isysroot", sdk,
+            "-target", "x86_64-apple-ios13.0-simulator",
+            "-mios-simulator-version-min=13.0",
+        ]
+    elif "ios" in str(libdir):
+        sdk = subprocess.run(
+            ["xcrun", "--sdk", "iphoneos", "--show-sdk-path"],
+            capture_output=True, text=True).stdout.strip()
+        extra_flags = [
+            "-isysroot", sdk,
+            "-target", "arm64-apple-ios13.0",
+            "-miphoneos-version-min=13.0",
+        ]
+
     cmd = [
         cxx,
         "-shared", "-fPIC", "-fvisibility=hidden",
+        *extra_flags,
         f"-I{INCLUDE_NAPI / 'napi'}",   # tests do #include <js_native_api.h>
         f"-I{INCLUDE_NAPI}",             # for users including <napi/...>
         f"-I{TESTS}",
@@ -104,7 +129,7 @@ def main():
         if not any(p.suffix in (".c", ".cc") for p in d.iterdir()):
             skipped += 1
             continue
-        if build_one(d, libdir, args.dry_run):
+        if build_one(d, libdir, args.dry_run, args.platform):
             ok += 1
         else:
             fail += 1
