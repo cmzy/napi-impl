@@ -6,6 +6,9 @@ common:
   is_debug: false
   is_component_build: false
   v8_monolithic: true
+  # Required when linking the monolith into a shared library on Linux: changes
+  # V8's thread-local storage model so TLS relocations work under -shared.
+  v8_monolithic_for_shared_library: true
   v8_use_external_startup_data: false
   # Sandbox restricts external ArrayBuffer / external String backing stores to
   # in-sandbox memory; our tests pass user-malloc'd memory across the C ABI so
