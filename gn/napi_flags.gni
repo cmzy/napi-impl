@@ -1,0 +1,9 @@
+# Placeholder for cross-engine GN settings that need to be importable
+# (not configs). The actual compile-flag config lives in //napi/gn:napi_flags
+# (gn/BUILD.gn). This file is reserved for future shared variables.
+
+declare_args() {
+  # Switching engine target. Currently only v8 is supported; other engines
+  # use the CMake path.
+  napi_engine = "v8"
+}

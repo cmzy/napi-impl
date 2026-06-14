@@ -1,0 +1,28 @@
+# Source dependencies fetched by scripts/setup.py
+/third_party/
+
+# All build outputs
+/out/
+
+# NAPI headers synced from upstream by scripts/sync_napi_headers.py
+/include/napi/
+
+# NAPI test suite synced from nodejs/node by scripts/sync_napi_tests.py
+/test/js-native-api/
+
+# User-local YAML override for V8 args
+/config/v8_args.local.yml
+
+# Setup / patch state markers
+/.setup_stamp
+/patches/v8/.applied
+
+# Local build logs
+/out_*.log
+/*.log
+
+# Editor / OS noise
+.DS_Store
+*.swp
+.vscode/
+.idea/

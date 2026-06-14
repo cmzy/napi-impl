@@ -1,0 +1,7 @@
+sources_raw = read_file("sources.txt", "list lines")
+sources_filtered = filter_exclude(sources_raw, [ "", "#*" ])
+
+source_set("common") {
+  sources = sources_filtered
+  configs += [ "//napi/gn:napi_flags" ]
+}

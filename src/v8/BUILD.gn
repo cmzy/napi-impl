@@ -1,0 +1,34 @@
+sources_raw = read_file("sources.txt", "list lines")
+sources_filtered = filter_exclude(sources_raw, [ "", "#*" ])
+
+shared_library("napi_v8") {
+  sources = sources_filtered
+  configs += [
+    "//napi/gn:napi_flags",
+    "//:external_config",     # V8 ABI defines (V8_COMPRESS_POINTERS, etc.)
+  ]
+
+  deps = [
+    "//napi/src/common",
+    "//:v8_monolith",
+    "//third_party/rust/temporal_capi:temporal_capi",
+  ]
+
+  if (is_apple) {
+    output_name = "NapiV8"
+    ldflags = [
+      "-Wl,-exported_symbols_list," +
+          rebase_path("//napi/gn/exports/napi_v8.exp", root_build_dir),
+    ]
+  } else if (is_android || is_linux) {
+    output_name = "napi_v8"
+    ldflags = [
+      "-Wl,--version-script=" +
+          rebase_path("//napi/gn/exports/napi_v8.lds", root_build_dir),
+    ]
+  } else if (is_win) {
+    output_name = "napi_v8"
+    # .def consumed via sources on Windows
+    sources += [ "//napi/gn/exports/napi_v8.def" ]
+  }
+}

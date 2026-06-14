@@ -1,0 +1,6 @@
+group("src") {
+  deps = [
+    "//napi/src/common",
+    "//napi/src/v8:napi_v8",
+  ]
+}

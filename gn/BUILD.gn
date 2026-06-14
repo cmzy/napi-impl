@@ -1,0 +1,21 @@
+# Shared GN config for all napi-impl targets.
+# Imported into //napi/src/*/BUILD.gn via configs.
+
+config("napi_flags") {
+  cflags_cc = [
+    "-std=c++20",
+    "-fvisibility=hidden",
+    "-fvisibility-inlines-hidden",
+    "-fno-exceptions",
+    "-fno-rtti",
+  ]
+  defines = [
+    "NAPI_EXPERIMENTAL",
+    "BUILDING_NODE_EXTENSION",
+    "NAPI_VERSION=10",       # expose node_api_* (v9/v10) symbols as extern "C"
+  ]
+  include_dirs = [
+    "//napi/include",
+    "//include",  # V8 public headers (v8-context.h, libplatform/libplatform.h)
+  ]
+}

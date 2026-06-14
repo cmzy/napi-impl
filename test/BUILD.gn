@@ -1,0 +1,24 @@
+executable("run") {
+  testonly = true
+  sources = [ "run.cc" ]
+  configs += [
+    "//napi/gn:napi_flags",
+    "//:external_config",
+  ]
+  deps = [ "//napi/src/v8:napi_v8" ]
+}
+
+executable("runner") {
+  testonly = true
+  sources = [ "runner.cc" ]
+  configs += [
+    "//napi/gn:napi_flags",
+    "//:external_config",
+  ]
+  deps = [ "//napi/src/v8:napi_v8" ]
+}
+
+group("test") {
+  testonly = true
+  deps = [ ":run", ":runner" ]
+}

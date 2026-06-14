@@ -1,0 +1,75 @@
+# V8 build args — single source of truth.
+# Merge order (low -> high): common -> platforms.<key> -> v8_args.local.yml -> NAPI_GN_EXTRA_ARGS_FILE -> CLI --gn-arg.
+# `v8_jitless: true` triggers automatic expansion of the jitless bundle in scripts/build.py.
+
+common:
+  is_debug: false
+  is_component_build: false
+  v8_monolithic: true
+  v8_use_external_startup_data: false
+  # Sandbox restricts external ArrayBuffer / external String backing stores to
+  # in-sandbox memory; our tests pass user-malloc'd memory across the C ABI so
+  # disable both sandbox and pointer compression.
+  v8_enable_sandbox: false
+  v8_enable_pointer_compression: false
+  # Note: use_custom_libcxx=false breaks on macOS 26 SDK due to libc++ module
+  # version skew (V8's bundled headers vs. system Xcode). Safe to use V8's
+  # bundled libc++ here because we expose only a C ABI — no C++ objects
+  # cross the napi_* boundary, libc++ symbols stay hidden by -fvisibility.
+  use_custom_libcxx: true
+  treat_warnings_as_errors: false
+  symbol_level: 1
+  v8_enable_i18n_support: false   # trim binary size; opt in if needed
+  use_siso: false                 # M1 uses plain ninja, not Siso
+  # V8 14.x requires enable_rust=true (temporal_capi); accept the toolchain cost.
+
+platforms:
+
+  mac_arm64:
+    target_os: mac
+    target_cpu: arm64
+    mac_deployment_target: "11.0"
+
+  mac_x86_64:
+    target_os: mac
+    target_cpu: x64
+    mac_deployment_target: "11.0"
+
+  ios_arm64:
+    target_os: ios
+    target_cpu: arm64
+    ios_deployment_target: "13.0"
+    ios_enable_code_signing: false
+    v8_jitless: true
+
+  ios_sim_arm64:
+    target_os: ios
+    target_cpu: arm64
+    target_environment: simulator
+    ios_deployment_target: "13.0"
+    v8_jitless: true
+
+  ios_sim_x86_64:
+    target_os: ios
+    target_cpu: x64
+    target_environment: simulator
+    ios_deployment_target: "13.0"
+    v8_jitless: true
+
+  android_arm64:
+    target_os: android
+    target_cpu: arm64
+    android64_ndk_api_level: 21
+
+  android_x86_64:
+    target_os: android
+    target_cpu: x64
+    android64_ndk_api_level: 21
+
+  linux_x64:
+    target_os: linux
+    target_cpu: x64
+
+  windows_x64:
+    target_os: win
+    target_cpu: x64

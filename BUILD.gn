@@ -1,0 +1,14 @@
+# Top-level target group for napi-impl.
+#
+# This BUILD.gn is mounted into V8's source tree at //napi/ by
+# scripts/setup.py (via a symlink). All references below are from
+# V8's source root perspective: //napi/... is our code, // is V8.
+
+group("default") {
+  deps = [ "//napi/src/v8:napi_v8" ]
+}
+
+group("test") {
+  testonly = true
+  deps = [ "//napi/test:run" ]
+}
