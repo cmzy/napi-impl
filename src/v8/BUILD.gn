@@ -10,6 +10,7 @@ shared_library("napi_v8") {
 
   deps = [
     "//napi/src/common",
+    "//napi/src/v8/inspector:inspector",
     "//:v8_monolith",
     "//third_party/rust/temporal_capi:temporal_capi",
   ]

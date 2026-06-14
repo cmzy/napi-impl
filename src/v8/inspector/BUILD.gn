@@ -1,0 +1,38 @@
+# Inspector subsystem: V8 inspector + WebSocket server backed by llhttp.
+
+static_library("llhttp") {
+  sources = [
+    "//napi/third_party/llhttp/src/api.c",
+    "//napi/third_party/llhttp/src/http.c",
+    "//napi/third_party/llhttp/src/llhttp.c",
+  ]
+  include_dirs = [ "//napi/third_party/llhttp/include" ]
+  cflags = [
+    "-Wno-everything",
+  ]
+  public_configs = [ ":llhttp_public" ]
+}
+
+config("llhttp_public") {
+  include_dirs = [ "//napi/third_party/llhttp/include" ]
+}
+
+source_set("inspector") {
+  sources = [
+    "bridge.cc",
+    "inspector_api.cc",
+    "server.cc",
+    "websocket.cc",
+  ]
+  deps = [
+    ":llhttp",
+  ]
+  configs += [
+    "//napi/gn:napi_flags",
+    "//:external_config",
+  ]
+  include_dirs = [
+    "//napi/src/v8",   # for js_native_api_v8.h / _impl.h
+  ]
+  public_configs = [ ":llhttp_public" ]
+}

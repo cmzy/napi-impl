@@ -143,6 +143,15 @@ def step_symlink_into_v8():
     print(f"[ok] symlink {link} -> {rel}")
 
 
+def step_sync_llhttp():
+    llhttp = THIRD_PARTY / "llhttp"
+    if (llhttp / ".git").is_dir():
+        print("[skip] llhttp already synced")
+        return
+    run(["git", "clone", "--depth=1", "--branch", "release/v9.2.1",
+         "https://github.com/nodejs/llhttp.git", str(llhttp)])
+
+
 def step_sync_napi_headers():
     run([sys.executable, str(ROOT / "scripts" / "sync_napi_headers.py")])
 
@@ -167,6 +176,8 @@ def main():
     step_apply_patches()
     step_symlink_into_v8()
     step_sync_napi_headers()
+    step_sync_napi_tests()
+    step_sync_llhttp()
     step_gen_exports()
 
     (ROOT / ".setup_stamp").write_text(read_v8_version() + "\n")

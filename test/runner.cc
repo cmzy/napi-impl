@@ -30,6 +30,7 @@ extern "C" {
 #include "napi/js_native_api.h"
 #include "napi/node_api.h"
 #include "napi_v8/embedding.h"
+#include "napi_v8/inspector.h"
 }
 
 // Pull in our internal env layout so we can drain pending finalizers
@@ -554,6 +555,20 @@ int main(int argc, char** argv) {
 
   CHK(napi_create_env(runtime, &g_env));
 
+  // Optional: --inspect=<port>  among extra argv triggers the V8 inspector.
+  for (int i = 4; i < argc; ++i) {
+    const char* a = argv[i];
+    if (std::strncmp(a, "--inspect=", 10) == 0) {
+      int port = std::atoi(a + 10);
+      CHK(napi_v8_inspector_start(g_env, port, "napi_v8 runner"));
+      if (std::strstr(a, ",wait")) {
+        std::fprintf(stderr, "[inspector] waiting for client on port %d\n",
+                     port);
+        napi_v8_inspector_wait_for_connection(g_env);
+      }
+    }
+  }
+
   napi_handle_scope scope;
   CHK(napi_open_handle_scope(g_env, &scope));
 
@@ -698,7 +713,19 @@ int main(int argc, char** argv) {
     }
   }
 
+  // If the inspector was started, give the CDP client a short tail window so
+  // post-test commands (like the smoke test's Runtime.evaluate) complete
+  // before we tear V8 down.
+  for (int i = 4; i < argc; ++i) {
+    if (std::strncmp(argv[i], "--inspect=", 10) == 0) {
+      // Idle 2s.  Cheap and predictable for tests; production embedders
+      // would loop until the client disconnects.
+      ::usleep(2 * 1000 * 1000);
+      break;
+    }
+  }
   CHK(napi_close_handle_scope(g_env, scope));
+  napi_v8_inspector_stop(g_env);
   CHK(napi_destroy_env(g_env));
   CHK(napi_destroy_runtime(runtime));
   CHK(napi_destroy_platform(platform));

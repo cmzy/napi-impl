@@ -127,3 +127,6 @@ _node_api_create_property_key_utf8
 _node_api_create_syntax_error
 _node_api_symbol_for
 _node_api_throw_syntax_error
+_napi_v8_inspector_start
+_napi_v8_inspector_wait_for_connection
+_napi_v8_inspector_stop
