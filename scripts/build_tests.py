@@ -63,6 +63,7 @@ def build_one(feature_dir: Path, libdir: Path, dry_run: bool,
             "-miphoneos-version-min=13.0",
         ]
 
+    lib_link_name = "napi_v8" if (libdir / "libnapi_v8.so").exists() else "NapiV8"
     cmd = [
         cxx,
         "-shared", "-fPIC", "-fvisibility=hidden",
@@ -77,7 +78,7 @@ def build_one(feature_dir: Path, libdir: Path, dry_run: bool,
         "-O2",
         "-Wno-everything",
         *(str(s) for s in sources),
-        f"-L{libdir}", "-lNapiV8",
+        f"-L{libdir}", f"-l{lib_link_name}",
         f"-Wl,-rpath,{libdir}",
         "-o", str(out_so),
     ]
@@ -94,12 +95,13 @@ def build_one(feature_dir: Path, libdir: Path, dry_run: bool,
         return False
     # libNapiV8.dylib was linked with install_name="./libNapiV8.dylib", which
     # dyld can't resolve via @rpath. Rewrite the dep to absolute path.
-    subprocess.run(
-        ["install_name_tool", "-change",
-         "./libNapiV8.dylib",
-         str(libdir / "libNapiV8.dylib"),
-         str(out_so)],
-        check=False)
+    if (libdir / "libNapiV8.dylib").exists():
+        subprocess.run(
+            ["install_name_tool", "-change",
+             "./libNapiV8.dylib",
+             str(libdir / "libNapiV8.dylib"),
+             str(out_so)],
+            check=False)
     return True
 
 
@@ -113,8 +115,9 @@ def main():
     args = ap.parse_args()
 
     libdir = lib_dir(args.platform, args.arch, args.config)
-    if not (libdir / "libNapiV8.dylib").exists():
-        sys.exit(f"libNapiV8.dylib not found in {libdir} — run scripts/build.py first")
+    lib_names = ("libNapiV8.dylib", "libnapi_v8.so", "napi_v8.dll")
+    if not any((libdir / n).exists() for n in lib_names):
+        sys.exit(f"napi library not found in {libdir} — run scripts/build.py first")
 
     if not TESTS.is_dir():
         sys.exit(f"{TESTS} missing — run scripts/sync_napi_tests.py first")

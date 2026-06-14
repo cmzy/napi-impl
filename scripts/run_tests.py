@@ -54,6 +54,8 @@ def main():
     env = os.environ.copy()
     env["DYLD_LIBRARY_PATH"] = (
         str(runner.parent) + os.pathsep + env.get("DYLD_LIBRARY_PATH", ""))
+    env["LD_LIBRARY_PATH"] = (
+        str(runner.parent) + os.pathsep + env.get("LD_LIBRARY_PATH", ""))
 
     # iOS sim: spawn through simctl, pass env via SIMCTL_CHILD_*.
     sim_prefix: list[str] = []
