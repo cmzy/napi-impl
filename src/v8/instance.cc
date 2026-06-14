@@ -5,111 +5,88 @@
 #include <climits>
 #include <cmath>
 #define NAPI_EXPERIMENTAL
-#include "napi/js_native_api.h"
-#include "napi/node_api.h"
 #include "js_native_api_v8.h"
 #include "js_native_api_v8_impl.h"
+#include "napi/js_native_api.h"
+#include "napi/node_api.h"
 
-#define CHECK_MAYBE_NOTHING(env, maybe, status)                                \
-  RETURN_STATUS_IF_FALSE((env), !((maybe).IsNothing()), (status))
+#define CHECK_MAYBE_NOTHING(env, maybe, status) RETURN_STATUS_IF_FALSE((env), !((maybe).IsNothing()), (status))
 
-#define CHECK_MAYBE_NOTHING_WITH_PREAMBLE(env, maybe, status)                  \
-  RETURN_STATUS_IF_FALSE_WITH_PREAMBLE((env), !((maybe).IsNothing()), (status))
+#define CHECK_MAYBE_NOTHING_WITH_PREAMBLE(env, maybe, status)                                                          \
+    RETURN_STATUS_IF_FALSE_WITH_PREAMBLE((env), !((maybe).IsNothing()), (status))
 
-#define CHECK_TO_NUMBER(env, context, result, src)                             \
-  CHECK_TO_TYPE((env), Number, (context), (result), (src), napi_number_expected)
+#define CHECK_TO_NUMBER(env, context, result, src)                                                                     \
+    CHECK_TO_TYPE((env), Number, (context), (result), (src), napi_number_expected)
 
-#define CHECK_NEW_FROM_UTF8_LEN(env, result, str, len)                         \
-  do {                                                                         \
-    static_assert(static_cast<int>(NAPI_AUTO_LENGTH) == -1,                    \
-                  "Casting NAPI_AUTO_LENGTH to int must result in -1");        \
-    RETURN_STATUS_IF_FALSE(                                                    \
-        (env), (len == NAPI_AUTO_LENGTH) || len <= INT_MAX, napi_invalid_arg); \
-    RETURN_STATUS_IF_FALSE((env), (str) != nullptr, napi_invalid_arg);         \
-    auto str_maybe = v8::String::NewFromUtf8((env)->isolate,                   \
-                                             (str),                            \
-                                             v8::NewStringType::kInternalized, \
-                                             static_cast<int>(len));           \
-    CHECK_MAYBE_EMPTY((env), str_maybe, napi_generic_failure);                 \
-    (result) = str_maybe.ToLocalChecked();                                     \
-  } while (0)
+#define CHECK_NEW_FROM_UTF8_LEN(env, result, str, len)                                                                 \
+    do {                                                                                                               \
+        static_assert(static_cast<int>(NAPI_AUTO_LENGTH) == -1, "Casting NAPI_AUTO_LENGTH to int must result in -1");  \
+        RETURN_STATUS_IF_FALSE((env), (len == NAPI_AUTO_LENGTH) || len <= INT_MAX, napi_invalid_arg);                  \
+        RETURN_STATUS_IF_FALSE((env), (str) != nullptr, napi_invalid_arg);                                             \
+        auto str_maybe = v8::String::NewFromUtf8((env)->isolate, (str), v8::NewStringType::kInternalized,              \
+                                                 static_cast<int>(len));                                               \
+        CHECK_MAYBE_EMPTY((env), str_maybe, napi_generic_failure);                                                     \
+        (result) = str_maybe.ToLocalChecked();                                                                         \
+    } while (0)
 
-#define CHECK_NEW_FROM_UTF8(env, result, str)                                  \
-  CHECK_NEW_FROM_UTF8_LEN((env), (result), (str), NAPI_AUTO_LENGTH)
+#define CHECK_NEW_FROM_UTF8(env, result, str) CHECK_NEW_FROM_UTF8_LEN((env), (result), (str), NAPI_AUTO_LENGTH)
 
-#define CREATE_TYPED_ARRAY(                                                    \
-    env, type, size_of_element, buffer, byte_offset, length, out)              \
-  do {                                                                         \
-    if ((size_of_element) > 1) {                                               \
-      THROW_RANGE_ERROR_IF_FALSE(                                              \
-          (env),                                                               \
-          (byte_offset) % (size_of_element) == 0,                              \
-          "ERR_NAPI_INVALID_TYPEDARRAY_ALIGNMENT",                             \
-          "start offset of " #type                                             \
-          " should be a multiple of " #size_of_element);                       \
-    }                                                                          \
-    THROW_RANGE_ERROR_IF_FALSE(                                                \
-        (env),                                                                 \
-        (length) * (size_of_element) + (byte_offset) <= buffer->ByteLength(),  \
-        "ERR_NAPI_INVALID_TYPEDARRAY_LENGTH",                                  \
-        "Invalid typed array length");                                         \
-    (out) = v8::type::New((buffer), (byte_offset), (length));                  \
-  } while (0)
+#define CREATE_TYPED_ARRAY(env, type, size_of_element, buffer, byte_offset, length, out)                               \
+    do {                                                                                                               \
+        if ((size_of_element) > 1) {                                                                                   \
+            THROW_RANGE_ERROR_IF_FALSE((env), (byte_offset) % (size_of_element) == 0,                                  \
+                                       "ERR_NAPI_INVALID_TYPEDARRAY_ALIGNMENT",                                        \
+                                       "start offset of " #type " should be a multiple of " #size_of_element);         \
+        }                                                                                                              \
+        THROW_RANGE_ERROR_IF_FALSE((env), (length) * (size_of_element) + (byte_offset) <= buffer->ByteLength(),        \
+                                   "ERR_NAPI_INVALID_TYPEDARRAY_LENGTH", "Invalid typed array length");                \
+        (out) = v8::type::New((buffer), (byte_offset), (length));                                                      \
+    } while (0)
 
-napi_status NAPI_CDECL napi_get_version(node_api_basic_env env,
-                                        uint32_t* result) {
-  CHECK_ENV(env);
-  CHECK_ARG(env, result);
-  *result = NODE_API_SUPPORTED_VERSION_MAX;
-  return napi_clear_last_error(env);
+napi_status NAPI_CDECL napi_get_version(node_api_basic_env env, uint32_t *result) {
+    CHECK_ENV(env);
+    CHECK_ARG(env, result);
+    *result = NODE_API_SUPPORTED_VERSION_MAX;
+    return napi_clear_last_error(env);
 }
 
 
-napi_status NAPI_CDECL napi_adjust_external_memory(node_api_basic_env env,
-                                                   int64_t change_in_bytes,
-                                                   int64_t* adjusted_value) {
-  CHECK_ENV(env);
-  CHECK_ARG(env, adjusted_value);
+napi_status NAPI_CDECL napi_adjust_external_memory(node_api_basic_env env, int64_t change_in_bytes,
+                                                   int64_t *adjusted_value) {
+    CHECK_ENV(env);
+    CHECK_ARG(env, adjusted_value);
 
-  *adjusted_value =
-      env->isolate->AdjustAmountOfExternalAllocatedMemory(change_in_bytes);
+    *adjusted_value = env->isolate->AdjustAmountOfExternalAllocatedMemory(change_in_bytes);
 
-  return napi_clear_last_error(env);
+    return napi_clear_last_error(env);
 }
 
 
-napi_status NAPI_CDECL napi_set_instance_data(node_api_basic_env basic_env,
-                                              void* data,
-                                              napi_finalize finalize_cb,
-                                              void* finalize_hint) {
-  napi_env env = const_cast<napi_env>(basic_env);
-  CHECK_ENV(env);
+napi_status NAPI_CDECL napi_set_instance_data(node_api_basic_env basic_env, void *data, napi_finalize finalize_cb,
+                                              void *finalize_hint) {
+    napi_env env = const_cast<napi_env>(basic_env);
+    CHECK_ENV(env);
 
-  v8impl::TrackedFinalizer* old_data =
-      static_cast<v8impl::TrackedFinalizer*>(env->instance_data);
-  if (old_data != nullptr) {
-    // Our contract so far has been to not finalize any old data there may be.
-    // So we simply delete it.
-    delete old_data;
-  }
+    v8impl::TrackedFinalizer *old_data = static_cast<v8impl::TrackedFinalizer *>(env->instance_data);
+    if (old_data != nullptr) {
+        // Our contract so far has been to not finalize any old data there may be.
+        // So we simply delete it.
+        delete old_data;
+    }
 
-  env->instance_data =
-      v8impl::TrackedFinalizer::New(env, finalize_cb, data, finalize_hint);
+    env->instance_data = v8impl::TrackedFinalizer::New(env, finalize_cb, data, finalize_hint);
 
-  return napi_clear_last_error(env);
+    return napi_clear_last_error(env);
 }
 
 
-napi_status NAPI_CDECL napi_get_instance_data(node_api_basic_env env,
-                                              void** data) {
-  CHECK_ENV(env);
-  CHECK_ARG(env, data);
+napi_status NAPI_CDECL napi_get_instance_data(node_api_basic_env env, void **data) {
+    CHECK_ENV(env);
+    CHECK_ARG(env, data);
 
-  v8impl::TrackedFinalizer* idata =
-      static_cast<v8impl::TrackedFinalizer*>(env->instance_data);
+    v8impl::TrackedFinalizer *idata = static_cast<v8impl::TrackedFinalizer *>(env->instance_data);
 
-  *data = (idata == nullptr ? nullptr : idata->data());
+    *data = (idata == nullptr ? nullptr : idata->data());
 
-  return napi_clear_last_error(env);
+    return napi_clear_last_error(env);
 }
-

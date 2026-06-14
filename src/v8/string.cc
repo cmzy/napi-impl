@@ -5,285 +5,201 @@
 #include <climits>
 #include <cmath>
 #define NAPI_EXPERIMENTAL
-#include "napi/js_native_api.h"
-#include "napi/node_api.h"
 #include "js_native_api_v8.h"
 #include "js_native_api_v8_impl.h"
+#include "napi/js_native_api.h"
+#include "napi/node_api.h"
 
-#define CHECK_MAYBE_NOTHING(env, maybe, status)                                \
-  RETURN_STATUS_IF_FALSE((env), !((maybe).IsNothing()), (status))
+#define CHECK_MAYBE_NOTHING(env, maybe, status) RETURN_STATUS_IF_FALSE((env), !((maybe).IsNothing()), (status))
 
-#define CHECK_MAYBE_NOTHING_WITH_PREAMBLE(env, maybe, status)                  \
-  RETURN_STATUS_IF_FALSE_WITH_PREAMBLE((env), !((maybe).IsNothing()), (status))
+#define CHECK_MAYBE_NOTHING_WITH_PREAMBLE(env, maybe, status)                                                          \
+    RETURN_STATUS_IF_FALSE_WITH_PREAMBLE((env), !((maybe).IsNothing()), (status))
 
-#define CHECK_TO_NUMBER(env, context, result, src)                             \
-  CHECK_TO_TYPE((env), Number, (context), (result), (src), napi_number_expected)
+#define CHECK_TO_NUMBER(env, context, result, src)                                                                     \
+    CHECK_TO_TYPE((env), Number, (context), (result), (src), napi_number_expected)
 
-#define CHECK_NEW_FROM_UTF8_LEN(env, result, str, len)                         \
-  do {                                                                         \
-    static_assert(static_cast<int>(NAPI_AUTO_LENGTH) == -1,                    \
-                  "Casting NAPI_AUTO_LENGTH to int must result in -1");        \
-    RETURN_STATUS_IF_FALSE(                                                    \
-        (env), (len == NAPI_AUTO_LENGTH) || len <= INT_MAX, napi_invalid_arg); \
-    RETURN_STATUS_IF_FALSE((env), (str) != nullptr, napi_invalid_arg);         \
-    auto str_maybe = v8::String::NewFromUtf8((env)->isolate,                   \
-                                             (str),                            \
-                                             v8::NewStringType::kInternalized, \
-                                             static_cast<int>(len));           \
-    CHECK_MAYBE_EMPTY((env), str_maybe, napi_generic_failure);                 \
-    (result) = str_maybe.ToLocalChecked();                                     \
-  } while (0)
+#define CHECK_NEW_FROM_UTF8_LEN(env, result, str, len)                                                                 \
+    do {                                                                                                               \
+        static_assert(static_cast<int>(NAPI_AUTO_LENGTH) == -1, "Casting NAPI_AUTO_LENGTH to int must result in -1");  \
+        RETURN_STATUS_IF_FALSE((env), (len == NAPI_AUTO_LENGTH) || len <= INT_MAX, napi_invalid_arg);                  \
+        RETURN_STATUS_IF_FALSE((env), (str) != nullptr, napi_invalid_arg);                                             \
+        auto str_maybe = v8::String::NewFromUtf8((env)->isolate, (str), v8::NewStringType::kInternalized,              \
+                                                 static_cast<int>(len));                                               \
+        CHECK_MAYBE_EMPTY((env), str_maybe, napi_generic_failure);                                                     \
+        (result) = str_maybe.ToLocalChecked();                                                                         \
+    } while (0)
 
-#define CHECK_NEW_FROM_UTF8(env, result, str)                                  \
-  CHECK_NEW_FROM_UTF8_LEN((env), (result), (str), NAPI_AUTO_LENGTH)
+#define CHECK_NEW_FROM_UTF8(env, result, str) CHECK_NEW_FROM_UTF8_LEN((env), (result), (str), NAPI_AUTO_LENGTH)
 
-#define CREATE_TYPED_ARRAY(                                                    \
-    env, type, size_of_element, buffer, byte_offset, length, out)              \
-  do {                                                                         \
-    if ((size_of_element) > 1) {                                               \
-      THROW_RANGE_ERROR_IF_FALSE(                                              \
-          (env),                                                               \
-          (byte_offset) % (size_of_element) == 0,                              \
-          "ERR_NAPI_INVALID_TYPEDARRAY_ALIGNMENT",                             \
-          "start offset of " #type                                             \
-          " should be a multiple of " #size_of_element);                       \
-    }                                                                          \
-    THROW_RANGE_ERROR_IF_FALSE(                                                \
-        (env),                                                                 \
-        (length) * (size_of_element) + (byte_offset) <= buffer->ByteLength(),  \
-        "ERR_NAPI_INVALID_TYPEDARRAY_LENGTH",                                  \
-        "Invalid typed array length");                                         \
-    (out) = v8::type::New((buffer), (byte_offset), (length));                  \
-  } while (0)
+#define CREATE_TYPED_ARRAY(env, type, size_of_element, buffer, byte_offset, length, out)                               \
+    do {                                                                                                               \
+        if ((size_of_element) > 1) {                                                                                   \
+            THROW_RANGE_ERROR_IF_FALSE((env), (byte_offset) % (size_of_element) == 0,                                  \
+                                       "ERR_NAPI_INVALID_TYPEDARRAY_ALIGNMENT",                                        \
+                                       "start offset of " #type " should be a multiple of " #size_of_element);         \
+        }                                                                                                              \
+        THROW_RANGE_ERROR_IF_FALSE((env), (length) * (size_of_element) + (byte_offset) <= buffer->ByteLength(),        \
+                                   "ERR_NAPI_INVALID_TYPEDARRAY_LENGTH", "Invalid typed array length");                \
+        (out) = v8::type::New((buffer), (byte_offset), (length));                                                      \
+    } while (0)
 
-napi_status NAPI_CDECL napi_create_string_latin1(napi_env env,
-                                                 const char* str,
-                                                 size_t length,
-                                                 napi_value* result) {
-  return v8impl::NewString(env, str, length, result, [&](v8::Isolate* isolate) {
-    return v8::String::NewFromOneByte(isolate,
-                                      reinterpret_cast<const uint8_t*>(str),
-                                      v8::NewStringType::kNormal,
-                                      length);
-  });
+napi_status NAPI_CDECL napi_create_string_latin1(napi_env env, const char *str, size_t length, napi_value *result) {
+    return v8impl::NewString(env, str, length, result, [&](v8::Isolate *isolate) {
+        return v8::String::NewFromOneByte(isolate, reinterpret_cast<const uint8_t *>(str), v8::NewStringType::kNormal,
+                                          length);
+    });
 }
 
 
-napi_status NAPI_CDECL napi_create_string_utf8(napi_env env,
-                                               const char* str,
-                                               size_t length,
-                                               napi_value* result) {
-  return v8impl::NewString(env, str, length, result, [&](v8::Isolate* isolate) {
-    return v8::String::NewFromUtf8(
-        isolate, str, v8::NewStringType::kNormal, static_cast<int>(length));
-  });
+napi_status NAPI_CDECL napi_create_string_utf8(napi_env env, const char *str, size_t length, napi_value *result) {
+    return v8impl::NewString(env, str, length, result, [&](v8::Isolate *isolate) {
+        return v8::String::NewFromUtf8(isolate, str, v8::NewStringType::kNormal, static_cast<int>(length));
+    });
 }
 
 
-napi_status NAPI_CDECL napi_create_string_utf16(napi_env env,
-                                                const char16_t* str,
-                                                size_t length,
-                                                napi_value* result) {
-  return v8impl::NewString(env, str, length, result, [&](v8::Isolate* isolate) {
-    return v8::String::NewFromTwoByte(isolate,
-                                      reinterpret_cast<const uint16_t*>(str),
-                                      v8::NewStringType::kNormal,
-                                      length);
-  });
+napi_status NAPI_CDECL napi_create_string_utf16(napi_env env, const char16_t *str, size_t length, napi_value *result) {
+    return v8impl::NewString(env, str, length, result, [&](v8::Isolate *isolate) {
+        return v8::String::NewFromTwoByte(isolate, reinterpret_cast<const uint16_t *>(str), v8::NewStringType::kNormal,
+                                          length);
+    });
 }
 
 
-napi_status NAPI_CDECL node_api_create_external_string_latin1(
-    napi_env env,
-    char* str,
-    size_t length,
-    node_api_basic_finalize basic_finalize_callback,
-    void* finalize_hint,
-    napi_value* result,
-    bool* copied) {
-  napi_finalize finalize_callback =
-      reinterpret_cast<napi_finalize>(basic_finalize_callback);
-  return v8impl::NewExternalString(
-      env,
-      str,
-      length,
-      finalize_callback,
-      finalize_hint,
-      result,
-      copied,
-      napi_create_string_latin1,
-      [&](v8::Isolate* isolate) {
-        if (length == NAPI_AUTO_LENGTH) {
-          length = (std::string_view(str)).length();
+napi_status NAPI_CDECL node_api_create_external_string_latin1(napi_env env, char *str, size_t length,
+                                                              node_api_basic_finalize basic_finalize_callback,
+                                                              void *finalize_hint, napi_value *result, bool *copied) {
+    napi_finalize finalize_callback = reinterpret_cast<napi_finalize>(basic_finalize_callback);
+    return v8impl::NewExternalString(env, str, length, finalize_callback, finalize_hint, result, copied,
+                                     napi_create_string_latin1, [&](v8::Isolate *isolate) {
+                                         if (length == NAPI_AUTO_LENGTH) {
+                                             length = (std::string_view(str)).length();
+                                         }
+                                         auto resource = new v8impl::ExternalOneByteStringResource(
+                                                 env, str, length, finalize_callback, finalize_hint);
+                                         return v8::String::NewExternalOneByte(isolate, resource);
+                                     });
+}
+
+
+napi_status NAPI_CDECL node_api_create_external_string_utf16(napi_env env, char16_t *str, size_t length,
+                                                             node_api_basic_finalize basic_finalize_callback,
+                                                             void *finalize_hint, napi_value *result, bool *copied) {
+    napi_finalize finalize_callback = reinterpret_cast<napi_finalize>(basic_finalize_callback);
+    return v8impl::NewExternalString(env, str, length, finalize_callback, finalize_hint, result, copied,
+                                     napi_create_string_utf16, [&](v8::Isolate *isolate) {
+                                         if (length == NAPI_AUTO_LENGTH) {
+                                             length = (std::u16string_view(str)).length();
+                                         }
+                                         auto resource = new v8impl::ExternalStringResource(
+                                                 env, str, length, finalize_callback, finalize_hint);
+                                         return v8::String::NewExternalTwoByte(isolate, resource);
+                                     });
+}
+
+
+napi_status node_api_create_property_key_latin1(napi_env env, const char *str, size_t length, napi_value *result) {
+    return v8impl::NewString(env, str, length, result, [&](v8::Isolate *isolate) {
+        return v8::String::NewFromOneByte(isolate, reinterpret_cast<const uint8_t *>(str),
+                                          v8::NewStringType::kInternalized, length);
+    });
+}
+
+
+napi_status node_api_create_property_key_utf8(napi_env env, const char *str, size_t length, napi_value *result) {
+    return v8impl::NewString(env, str, length, result, [&](v8::Isolate *isolate) {
+        return v8::String::NewFromUtf8(isolate, str, v8::NewStringType::kInternalized, static_cast<int>(length));
+    });
+}
+
+
+napi_status NAPI_CDECL node_api_create_property_key_utf16(napi_env env, const char16_t *str, size_t length,
+                                                          napi_value *result) {
+    return v8impl::NewString(env, str, length, result, [&](v8::Isolate *isolate) {
+        return v8::String::NewFromTwoByte(isolate, reinterpret_cast<const uint16_t *>(str),
+                                          v8::NewStringType::kInternalized, static_cast<int>(length));
+    });
+}
+
+
+napi_status NAPI_CDECL napi_get_value_string_latin1(napi_env env, napi_value value, char *buf, size_t bufsize,
+                                                    size_t *result) {
+    CHECK_ENV_NOT_IN_GC(env);
+    CHECK_ARG(env, value);
+
+    v8::Local<v8::Value> val = v8impl::V8LocalValueFromJsValue(value);
+    RETURN_STATUS_IF_FALSE(env, val->IsString(), napi_string_expected);
+
+    if (!buf) {
+        CHECK_ARG(env, result);
+        *result = val.As<v8::String>()->Length();
+    } else if (bufsize != 0) {
+        int copied = val.As<v8::String>()->WriteOneByte(env->isolate, reinterpret_cast<uint8_t *>(buf), 0, bufsize - 1,
+                                                        v8::String::NO_NULL_TERMINATION);
+
+        buf[copied] = '\0';
+        if (result != nullptr) {
+            *result = copied;
         }
-        auto resource = new v8impl::ExternalOneByteStringResource(
-            env, str, length, finalize_callback, finalize_hint);
-        return v8::String::NewExternalOneByte(isolate, resource);
-      });
+    } else if (result != nullptr) {
+        *result = 0;
+    }
+
+    return napi_clear_last_error(env);
 }
 
 
-napi_status NAPI_CDECL node_api_create_external_string_utf16(
-    napi_env env,
-    char16_t* str,
-    size_t length,
-    node_api_basic_finalize basic_finalize_callback,
-    void* finalize_hint,
-    napi_value* result,
-    bool* copied) {
-  napi_finalize finalize_callback =
-      reinterpret_cast<napi_finalize>(basic_finalize_callback);
-  return v8impl::NewExternalString(
-      env,
-      str,
-      length,
-      finalize_callback,
-      finalize_hint,
-      result,
-      copied,
-      napi_create_string_utf16,
-      [&](v8::Isolate* isolate) {
-        if (length == NAPI_AUTO_LENGTH) {
-          length = (std::u16string_view(str)).length();
+napi_status NAPI_CDECL napi_get_value_string_utf8(napi_env env, napi_value value, char *buf, size_t bufsize,
+                                                  size_t *result) {
+    CHECK_ENV_NOT_IN_GC(env);
+    CHECK_ARG(env, value);
+
+    v8::Local<v8::Value> val = v8impl::V8LocalValueFromJsValue(value);
+    RETURN_STATUS_IF_FALSE(env, val->IsString(), napi_string_expected);
+
+    if (!buf) {
+        CHECK_ARG(env, result);
+        *result = val.As<v8::String>()->Utf8Length(env->isolate);
+    } else if (bufsize != 0) {
+        int copied =
+                val.As<v8::String>()->WriteUtf8(env->isolate, buf, bufsize - 1, nullptr,
+                                                v8::String::REPLACE_INVALID_UTF8 | v8::String::NO_NULL_TERMINATION);
+
+        buf[copied] = '\0';
+        if (result != nullptr) {
+            *result = copied;
         }
-        auto resource = new v8impl::ExternalStringResource(
-            env, str, length, finalize_callback, finalize_hint);
-        return v8::String::NewExternalTwoByte(isolate, resource);
-      });
-}
-
-
-napi_status node_api_create_property_key_latin1(napi_env env,
-                                                const char* str,
-                                                size_t length,
-                                                napi_value* result) {
-  return v8impl::NewString(env, str, length, result, [&](v8::Isolate* isolate) {
-    return v8::String::NewFromOneByte(isolate,
-                                      reinterpret_cast<const uint8_t*>(str),
-                                      v8::NewStringType::kInternalized,
-                                      length);
-  });
-}
-
-
-napi_status node_api_create_property_key_utf8(napi_env env,
-                                              const char* str,
-                                              size_t length,
-                                              napi_value* result) {
-  return v8impl::NewString(env, str, length, result, [&](v8::Isolate* isolate) {
-    return v8::String::NewFromUtf8(isolate,
-                                   str,
-                                   v8::NewStringType::kInternalized,
-                                   static_cast<int>(length));
-  });
-}
-
-
-napi_status NAPI_CDECL node_api_create_property_key_utf16(napi_env env,
-                                                          const char16_t* str,
-                                                          size_t length,
-                                                          napi_value* result) {
-  return v8impl::NewString(env, str, length, result, [&](v8::Isolate* isolate) {
-    return v8::String::NewFromTwoByte(isolate,
-                                      reinterpret_cast<const uint16_t*>(str),
-                                      v8::NewStringType::kInternalized,
-                                      static_cast<int>(length));
-  });
-}
-
-
-napi_status NAPI_CDECL napi_get_value_string_latin1(
-    napi_env env, napi_value value, char* buf, size_t bufsize, size_t* result) {
-  CHECK_ENV_NOT_IN_GC(env);
-  CHECK_ARG(env, value);
-
-  v8::Local<v8::Value> val = v8impl::V8LocalValueFromJsValue(value);
-  RETURN_STATUS_IF_FALSE(env, val->IsString(), napi_string_expected);
-
-  if (!buf) {
-    CHECK_ARG(env, result);
-    *result = val.As<v8::String>()->Length();
-  } else if (bufsize != 0) {
-    int copied =
-        val.As<v8::String>()->WriteOneByte(env->isolate,
-                                           reinterpret_cast<uint8_t*>(buf),
-                                           0,
-                                           bufsize - 1,
-                                           v8::String::NO_NULL_TERMINATION);
-
-    buf[copied] = '\0';
-    if (result != nullptr) {
-      *result = copied;
+    } else if (result != nullptr) {
+        *result = 0;
     }
-  } else if (result != nullptr) {
-    *result = 0;
-  }
 
-  return napi_clear_last_error(env);
+    return napi_clear_last_error(env);
 }
 
 
-napi_status NAPI_CDECL napi_get_value_string_utf8(
-    napi_env env, napi_value value, char* buf, size_t bufsize, size_t* result) {
-  CHECK_ENV_NOT_IN_GC(env);
-  CHECK_ARG(env, value);
+napi_status NAPI_CDECL napi_get_value_string_utf16(napi_env env, napi_value value, char16_t *buf, size_t bufsize,
+                                                   size_t *result) {
+    CHECK_ENV_NOT_IN_GC(env);
+    CHECK_ARG(env, value);
 
-  v8::Local<v8::Value> val = v8impl::V8LocalValueFromJsValue(value);
-  RETURN_STATUS_IF_FALSE(env, val->IsString(), napi_string_expected);
+    v8::Local<v8::Value> val = v8impl::V8LocalValueFromJsValue(value);
+    RETURN_STATUS_IF_FALSE(env, val->IsString(), napi_string_expected);
 
-  if (!buf) {
-    CHECK_ARG(env, result);
-    *result = val.As<v8::String>()->Utf8Length(env->isolate);
-  } else if (bufsize != 0) {
-    int copied = val.As<v8::String>()->WriteUtf8(
-        env->isolate,
-        buf,
-        bufsize - 1,
-        nullptr,
-        v8::String::REPLACE_INVALID_UTF8 | v8::String::NO_NULL_TERMINATION);
+    if (!buf) {
+        CHECK_ARG(env, result);
+        // V8 assumes UTF-16 length is the same as the number of characters.
+        *result = val.As<v8::String>()->Length();
+    } else if (bufsize != 0) {
+        int copied = val.As<v8::String>()->Write(env->isolate, reinterpret_cast<uint16_t *>(buf), 0, bufsize - 1,
+                                                 v8::String::NO_NULL_TERMINATION);
 
-    buf[copied] = '\0';
-    if (result != nullptr) {
-      *result = copied;
+        buf[copied] = '\0';
+        if (result != nullptr) {
+            *result = copied;
+        }
+    } else if (result != nullptr) {
+        *result = 0;
     }
-  } else if (result != nullptr) {
-    *result = 0;
-  }
 
-  return napi_clear_last_error(env);
+    return napi_clear_last_error(env);
 }
-
-
-napi_status NAPI_CDECL napi_get_value_string_utf16(napi_env env,
-                                                   napi_value value,
-                                                   char16_t* buf,
-                                                   size_t bufsize,
-                                                   size_t* result) {
-  CHECK_ENV_NOT_IN_GC(env);
-  CHECK_ARG(env, value);
-
-  v8::Local<v8::Value> val = v8impl::V8LocalValueFromJsValue(value);
-  RETURN_STATUS_IF_FALSE(env, val->IsString(), napi_string_expected);
-
-  if (!buf) {
-    CHECK_ARG(env, result);
-    // V8 assumes UTF-16 length is the same as the number of characters.
-    *result = val.As<v8::String>()->Length();
-  } else if (bufsize != 0) {
-    int copied = val.As<v8::String>()->Write(env->isolate,
-                                             reinterpret_cast<uint16_t*>(buf),
-                                             0,
-                                             bufsize - 1,
-                                             v8::String::NO_NULL_TERMINATION);
-
-    buf[copied] = '\0';
-    if (result != nullptr) {
-      *result = copied;
-    }
-  } else if (result != nullptr) {
-    *result = 0;
-  }
-
-  return napi_clear_last_error(env);
-}
-

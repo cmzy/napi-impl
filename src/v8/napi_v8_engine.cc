@@ -22,135 +22,136 @@ extern "C" {
 // ---- napi_platform / napi_runtime opaque types ----------------------------
 
 struct napi_platform__ {
-  std::unique_ptr<v8::Platform> platform;
+    std::unique_ptr<v8::Platform> platform;
 };
 
 struct napi_runtime__ {
-  v8::Isolate* isolate = nullptr;
-  v8::Isolate::CreateParams create_params;
-  std::unique_ptr<v8::ArrayBuffer::Allocator> allocator;
+    v8::Isolate *isolate = nullptr;
+    v8::Isolate::CreateParams create_params;
+    std::unique_ptr<v8::ArrayBuffer::Allocator> allocator;
 };
 
 // ---- Concrete env subclass ------------------------------------------------
 
 namespace {
 
-class EmbedEnv : public napi_env__ {
- public:
-  EmbedEnv(v8::Local<v8::Context> ctx, int32_t module_api_version)
-      : napi_env__(ctx, module_api_version) {}
+    class EmbedEnv : public napi_env__ {
+    public:
+        EmbedEnv(v8::Local<v8::Context> ctx, int32_t module_api_version) : napi_env__(ctx, module_api_version) {}
 
-  // No host queue: invoke finalizers synchronously.
-  void CallFinalizer(napi_finalize cb, void* data, void* hint) override {
-    if (cb != nullptr) cb(this, data, hint);
-  }
-};
+        // No host queue: invoke finalizers synchronously.
+        void CallFinalizer(napi_finalize cb, void *data, void *hint) override {
+            if (cb != nullptr)
+                cb(this, data, hint);
+        }
+    };
 
-// ---- Per-context private key cache ----------------------------------------
+    // ---- Per-context private key cache ----------------------------------------
 
-}  // namespace
+} // namespace
 
 namespace napi_v8_priv {
 
-v8::Local<v8::Private> GetPrivateKey(v8::Local<v8::Context> ctx,
-                                     PrivateKeyKind kind) {
-  // V8 14.x removed Context::GetIsolate(); use the active isolate (callers
-  // are inside an Isolate::Scope at this point).
-  v8::Isolate* iso = v8::Isolate::GetCurrent();
-  (void)ctx;
-  const char* name = (kind == PrivateKeyKind::wrapper)
-                         ? "node:napi_v8::wrapper"
-                         : "node:napi_v8::type_tag";
-  v8::Local<v8::String> s =
-      v8::String::NewFromUtf8(iso, name, v8::NewStringType::kInternalized)
-          .ToLocalChecked();
-  return v8::Private::ForApi(iso, s);
-}
+    v8::Local<v8::Private> GetPrivateKey(v8::Local<v8::Context> ctx, PrivateKeyKind kind) {
+        // V8 14.x removed Context::GetIsolate(); use the active isolate (callers
+        // are inside an Isolate::Scope at this point).
+        v8::Isolate *iso = v8::Isolate::GetCurrent();
+        (void) ctx;
+        const char *name = (kind == PrivateKeyKind::wrapper) ? "node:napi_v8::wrapper" : "node:napi_v8::type_tag";
+        v8::Local<v8::String> s = v8::String::NewFromUtf8(iso, name, v8::NewStringType::kInternalized).ToLocalChecked();
+        return v8::Private::ForApi(iso, s);
+    }
 
-}  // namespace napi_v8_priv
+} // namespace napi_v8_priv
 
 // ---- Embedding C API ------------------------------------------------------
 
 extern "C" {
 
-napi_status NAPI_CDECL napi_create_platform(int argc,
-                                            char** argv,
-                                            int exec_argc,
-                                            char** exec_argv,
-                                            napi_error_message_handler err_handler,
-                                            bool exit_on_unhandled_error,
-                                            napi_platform* result) {
-  if (result == nullptr) return napi_invalid_arg;
-  auto* p = new napi_platform__();
-  // Expose gc() to JS so tests that rely on global.gc work.
-  const char kFlags[] = "--expose-gc --harmony";
-  v8::V8::SetFlagsFromString(kFlags, sizeof(kFlags) - 1);
-  p->platform = v8::platform::NewDefaultPlatform();
-  v8::V8::InitializePlatform(p->platform.get());
-  v8::V8::Initialize();
-  (void)argc; (void)argv; (void)exec_argc; (void)exec_argv;
-  (void)err_handler; (void)exit_on_unhandled_error;
-  *result = p;
-  return napi_ok;
+napi_status NAPI_CDECL napi_create_platform(int argc, char **argv, int exec_argc, char **exec_argv,
+                                            napi_error_message_handler err_handler, bool exit_on_unhandled_error,
+                                            napi_platform *result) {
+    if (result == nullptr)
+        return napi_invalid_arg;
+    auto *p = new napi_platform__();
+    // Expose gc() to JS so tests that rely on global.gc work.
+    const char kFlags[] = "--expose-gc --harmony";
+    v8::V8::SetFlagsFromString(kFlags, sizeof(kFlags) - 1);
+    p->platform = v8::platform::NewDefaultPlatform();
+    v8::V8::InitializePlatform(p->platform.get());
+    v8::V8::Initialize();
+    (void) argc;
+    (void) argv;
+    (void) exec_argc;
+    (void) exec_argv;
+    (void) err_handler;
+    (void) exit_on_unhandled_error;
+    *result = p;
+    return napi_ok;
 }
 
 napi_status NAPI_CDECL napi_destroy_platform(napi_platform platform) {
-  if (platform == nullptr) return napi_invalid_arg;
-  v8::V8::Dispose();
-  v8::V8::DisposePlatform();
-  delete platform;
-  return napi_ok;
+    if (platform == nullptr)
+        return napi_invalid_arg;
+    v8::V8::Dispose();
+    v8::V8::DisposePlatform();
+    delete platform;
+    return napi_ok;
 }
 
-napi_status NAPI_CDECL napi_create_runtime(napi_platform platform,
-                                           napi_runtime* result) {
-  if (platform == nullptr || result == nullptr) return napi_invalid_arg;
-  auto* r = new napi_runtime__();
-  r->allocator.reset(v8::ArrayBuffer::Allocator::NewDefaultAllocator());
-  r->create_params.array_buffer_allocator = r->allocator.get();
-  r->isolate = v8::Isolate::New(r->create_params);
-  if (r->isolate == nullptr) {
-    delete r;
-    return napi_generic_failure;
-  }
-  *result = r;
-  return napi_ok;
+napi_status NAPI_CDECL napi_create_runtime(napi_platform platform, napi_runtime *result) {
+    if (platform == nullptr || result == nullptr)
+        return napi_invalid_arg;
+    auto *r = new napi_runtime__();
+    r->allocator.reset(v8::ArrayBuffer::Allocator::NewDefaultAllocator());
+    r->create_params.array_buffer_allocator = r->allocator.get();
+    r->isolate = v8::Isolate::New(r->create_params);
+    if (r->isolate == nullptr) {
+        delete r;
+        return napi_generic_failure;
+    }
+    *result = r;
+    return napi_ok;
 }
 
 napi_status NAPI_CDECL napi_destroy_runtime(napi_runtime runtime) {
-  if (runtime == nullptr) return napi_invalid_arg;
-  if (runtime->isolate != nullptr) runtime->isolate->Dispose();
-  delete runtime;
-  return napi_ok;
+    if (runtime == nullptr)
+        return napi_invalid_arg;
+    if (runtime->isolate != nullptr)
+        runtime->isolate->Dispose();
+    delete runtime;
+    return napi_ok;
 }
 
-napi_status NAPI_CDECL napi_create_env(napi_runtime runtime, napi_env* result) {
-  if (runtime == nullptr || result == nullptr) return napi_invalid_arg;
-  v8::Isolate* isolate = runtime->isolate;
-  isolate->Enter();
-  v8::HandleScope hs(isolate);
-  v8::Local<v8::Context> ctx = v8::Context::New(isolate);
-  if (ctx.IsEmpty()) {
-    isolate->Exit();
-    return napi_generic_failure;
-  }
-  // Enter the context so napi_get_global etc. resolve to ours.
-  ctx->Enter();
-  auto* env = new EmbedEnv(ctx, NAPI_VERSION);
-  *result = env;
-  return napi_ok;
+napi_status NAPI_CDECL napi_create_env(napi_runtime runtime, napi_env *result) {
+    if (runtime == nullptr || result == nullptr)
+        return napi_invalid_arg;
+    v8::Isolate *isolate = runtime->isolate;
+    isolate->Enter();
+    v8::HandleScope hs(isolate);
+    v8::Local<v8::Context> ctx = v8::Context::New(isolate);
+    if (ctx.IsEmpty()) {
+        isolate->Exit();
+        return napi_generic_failure;
+    }
+    // Enter the context so napi_get_global etc. resolve to ours.
+    ctx->Enter();
+    auto *env = new EmbedEnv(ctx, NAPI_VERSION);
+    *result = env;
+    return napi_ok;
 }
 
 napi_status NAPI_CDECL napi_destroy_env(napi_env env) {
-  if (env == nullptr) return napi_invalid_arg;
-  v8::Isolate* iso = env->isolate;
-  {
-    v8::HandleScope hs(iso);
-    env->context()->Exit();
-  }
-  env->Unref();   // matches initial refs=1 from napi_env__ ctor; triggers DeleteMe
-  iso->Exit();
-  return napi_ok;
+    if (env == nullptr)
+        return napi_invalid_arg;
+    v8::Isolate *iso = env->isolate;
+    {
+        v8::HandleScope hs(iso);
+        env->context()->Exit();
+    }
+    env->Unref(); // matches initial refs=1 from napi_env__ ctor; triggers DeleteMe
+    iso->Exit();
+    return napi_ok;
 }
 
-}  // extern "C"
+} // extern "C"

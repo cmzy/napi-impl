@@ -5,326 +5,283 @@
 #include <climits>
 #include <cmath>
 #define NAPI_EXPERIMENTAL
-#include "napi/js_native_api.h"
-#include "napi/node_api.h"
 #include "js_native_api_v8.h"
 #include "js_native_api_v8_impl.h"
+#include "napi/js_native_api.h"
+#include "napi/node_api.h"
 
-#define CHECK_MAYBE_NOTHING(env, maybe, status)                                \
-  RETURN_STATUS_IF_FALSE((env), !((maybe).IsNothing()), (status))
+#define CHECK_MAYBE_NOTHING(env, maybe, status) RETURN_STATUS_IF_FALSE((env), !((maybe).IsNothing()), (status))
 
-#define CHECK_MAYBE_NOTHING_WITH_PREAMBLE(env, maybe, status)                  \
-  RETURN_STATUS_IF_FALSE_WITH_PREAMBLE((env), !((maybe).IsNothing()), (status))
+#define CHECK_MAYBE_NOTHING_WITH_PREAMBLE(env, maybe, status)                                                          \
+    RETURN_STATUS_IF_FALSE_WITH_PREAMBLE((env), !((maybe).IsNothing()), (status))
 
-#define CHECK_TO_NUMBER(env, context, result, src)                             \
-  CHECK_TO_TYPE((env), Number, (context), (result), (src), napi_number_expected)
+#define CHECK_TO_NUMBER(env, context, result, src)                                                                     \
+    CHECK_TO_TYPE((env), Number, (context), (result), (src), napi_number_expected)
 
-#define CHECK_NEW_FROM_UTF8_LEN(env, result, str, len)                         \
-  do {                                                                         \
-    static_assert(static_cast<int>(NAPI_AUTO_LENGTH) == -1,                    \
-                  "Casting NAPI_AUTO_LENGTH to int must result in -1");        \
-    RETURN_STATUS_IF_FALSE(                                                    \
-        (env), (len == NAPI_AUTO_LENGTH) || len <= INT_MAX, napi_invalid_arg); \
-    RETURN_STATUS_IF_FALSE((env), (str) != nullptr, napi_invalid_arg);         \
-    auto str_maybe = v8::String::NewFromUtf8((env)->isolate,                   \
-                                             (str),                            \
-                                             v8::NewStringType::kInternalized, \
-                                             static_cast<int>(len));           \
-    CHECK_MAYBE_EMPTY((env), str_maybe, napi_generic_failure);                 \
-    (result) = str_maybe.ToLocalChecked();                                     \
-  } while (0)
+#define CHECK_NEW_FROM_UTF8_LEN(env, result, str, len)                                                                 \
+    do {                                                                                                               \
+        static_assert(static_cast<int>(NAPI_AUTO_LENGTH) == -1, "Casting NAPI_AUTO_LENGTH to int must result in -1");  \
+        RETURN_STATUS_IF_FALSE((env), (len == NAPI_AUTO_LENGTH) || len <= INT_MAX, napi_invalid_arg);                  \
+        RETURN_STATUS_IF_FALSE((env), (str) != nullptr, napi_invalid_arg);                                             \
+        auto str_maybe = v8::String::NewFromUtf8((env)->isolate, (str), v8::NewStringType::kInternalized,              \
+                                                 static_cast<int>(len));                                               \
+        CHECK_MAYBE_EMPTY((env), str_maybe, napi_generic_failure);                                                     \
+        (result) = str_maybe.ToLocalChecked();                                                                         \
+    } while (0)
 
-#define CHECK_NEW_FROM_UTF8(env, result, str)                                  \
-  CHECK_NEW_FROM_UTF8_LEN((env), (result), (str), NAPI_AUTO_LENGTH)
+#define CHECK_NEW_FROM_UTF8(env, result, str) CHECK_NEW_FROM_UTF8_LEN((env), (result), (str), NAPI_AUTO_LENGTH)
 
-#define CREATE_TYPED_ARRAY(                                                    \
-    env, type, size_of_element, buffer, byte_offset, length, out)              \
-  do {                                                                         \
-    if ((size_of_element) > 1) {                                               \
-      THROW_RANGE_ERROR_IF_FALSE(                                              \
-          (env),                                                               \
-          (byte_offset) % (size_of_element) == 0,                              \
-          "ERR_NAPI_INVALID_TYPEDARRAY_ALIGNMENT",                             \
-          "start offset of " #type                                             \
-          " should be a multiple of " #size_of_element);                       \
-    }                                                                          \
-    THROW_RANGE_ERROR_IF_FALSE(                                                \
-        (env),                                                                 \
-        (length) * (size_of_element) + (byte_offset) <= buffer->ByteLength(),  \
-        "ERR_NAPI_INVALID_TYPEDARRAY_LENGTH",                                  \
-        "Invalid typed array length");                                         \
-    (out) = v8::type::New((buffer), (byte_offset), (length));                  \
-  } while (0)
+#define CREATE_TYPED_ARRAY(env, type, size_of_element, buffer, byte_offset, length, out)                               \
+    do {                                                                                                               \
+        if ((size_of_element) > 1) {                                                                                   \
+            THROW_RANGE_ERROR_IF_FALSE((env), (byte_offset) % (size_of_element) == 0,                                  \
+                                       "ERR_NAPI_INVALID_TYPEDARRAY_ALIGNMENT",                                        \
+                                       "start offset of " #type " should be a multiple of " #size_of_element);         \
+        }                                                                                                              \
+        THROW_RANGE_ERROR_IF_FALSE((env), (length) * (size_of_element) + (byte_offset) <= buffer->ByteLength(),        \
+                                   "ERR_NAPI_INVALID_TYPEDARRAY_LENGTH", "Invalid typed array length");                \
+        (out) = v8::type::New((buffer), (byte_offset), (length));                                                      \
+    } while (0)
 
-napi_status NAPI_CDECL napi_get_last_error_info(
-    node_api_basic_env basic_env, const napi_extended_error_info** result) {
-  // Warning: Keep in-sync with napi_status enum.
-  static const char* error_messages[] = {
-      nullptr,
-      "Invalid argument",
-      "An object was expected",
-      "A string was expected",
-      "A string or symbol was expected",
-      "A function was expected",
-      "A number was expected",
-      "A boolean was expected",
-      "An array was expected",
-      "Unknown failure",
-      "An exception is pending",
-      "The async work item was cancelled",
-      "napi_escape_handle already called on scope",
-      "Invalid handle scope usage",
-      "Invalid callback scope usage",
-      "Thread-safe function queue is full",
-      "Thread-safe function handle is closing",
-      "A bigint was expected",
-      "A date was expected",
-      "An arraybuffer was expected",
-      "A detachable arraybuffer was expected",
-      "Main thread would deadlock",
-      "External buffers are not allowed",
-      "Cannot run JavaScript",
-  };
-  napi_env env = const_cast<napi_env>(basic_env);
-  CHECK_ENV(env);
-  CHECK_ARG(env, result);
+napi_status NAPI_CDECL napi_get_last_error_info(node_api_basic_env basic_env, const napi_extended_error_info **result) {
+    // Warning: Keep in-sync with napi_status enum.
+    static const char *error_messages[] = {
+            nullptr,
+            "Invalid argument",
+            "An object was expected",
+            "A string was expected",
+            "A string or symbol was expected",
+            "A function was expected",
+            "A number was expected",
+            "A boolean was expected",
+            "An array was expected",
+            "Unknown failure",
+            "An exception is pending",
+            "The async work item was cancelled",
+            "napi_escape_handle already called on scope",
+            "Invalid handle scope usage",
+            "Invalid callback scope usage",
+            "Thread-safe function queue is full",
+            "Thread-safe function handle is closing",
+            "A bigint was expected",
+            "A date was expected",
+            "An arraybuffer was expected",
+            "A detachable arraybuffer was expected",
+            "Main thread would deadlock",
+            "External buffers are not allowed",
+            "Cannot run JavaScript",
+    };
+    napi_env env = const_cast<napi_env>(basic_env);
+    CHECK_ENV(env);
+    CHECK_ARG(env, result);
 
-  // The value of the constant below must be updated to reference the last
-  // message in the `napi_status` enum each time a new error message is added.
-  // We don't have a napi_status_last as this would result in an ABI
-  // change each time a message was added.
-  const int last_status = napi_cannot_run_js;
+    // The value of the constant below must be updated to reference the last
+    // message in the `napi_status` enum each time a new error message is added.
+    // We don't have a napi_status_last as this would result in an ABI
+    // change each time a message was added.
+    const int last_status = napi_cannot_run_js;
 
-  static_assert(NAPI_ARRAYSIZE(error_messages) == last_status + 1,
-                "Count of error messages must match count of error values");
-  CHECK_LE(env->last_error.error_code, last_status);
-  // Wait until someone requests the last error information to fetch the error
-  // message string
-  env->last_error.error_message = error_messages[env->last_error.error_code];
+    static_assert(NAPI_ARRAYSIZE(error_messages) == last_status + 1,
+                  "Count of error messages must match count of error values");
+    CHECK_LE(env->last_error.error_code, last_status);
+    // Wait until someone requests the last error information to fetch the error
+    // message string
+    env->last_error.error_message = error_messages[env->last_error.error_code];
 
-  if (env->last_error.error_code == napi_ok) {
-    napi_clear_last_error(env);
-  }
-  *result = &(env->last_error);
-  return napi_ok;
+    if (env->last_error.error_code == napi_ok) {
+        napi_clear_last_error(env);
+    }
+    *result = &(env->last_error);
+    return napi_ok;
 }
 
 
-napi_status NAPI_CDECL napi_create_error(napi_env env,
-                                         napi_value code,
-                                         napi_value msg,
-                                         napi_value* result) {
-  CHECK_ENV_NOT_IN_GC(env);
-  CHECK_ARG(env, msg);
-  CHECK_ARG(env, result);
+napi_status NAPI_CDECL napi_create_error(napi_env env, napi_value code, napi_value msg, napi_value *result) {
+    CHECK_ENV_NOT_IN_GC(env);
+    CHECK_ARG(env, msg);
+    CHECK_ARG(env, result);
 
-  v8::Local<v8::Value> message_value = v8impl::V8LocalValueFromJsValue(msg);
-  RETURN_STATUS_IF_FALSE(env, message_value->IsString(), napi_string_expected);
+    v8::Local<v8::Value> message_value = v8impl::V8LocalValueFromJsValue(msg);
+    RETURN_STATUS_IF_FALSE(env, message_value->IsString(), napi_string_expected);
 
-  v8::Local<v8::Value> error_obj =
-      v8::Exception::Error(message_value.As<v8::String>());
-  STATUS_CALL(set_error_code(env, error_obj, code, nullptr));
+    v8::Local<v8::Value> error_obj = v8::Exception::Error(message_value.As<v8::String>());
+    STATUS_CALL(set_error_code(env, error_obj, code, nullptr));
 
-  *result = v8impl::JsValueFromV8LocalValue(error_obj);
+    *result = v8impl::JsValueFromV8LocalValue(error_obj);
 
-  return napi_clear_last_error(env);
+    return napi_clear_last_error(env);
 }
 
 
-napi_status NAPI_CDECL napi_create_type_error(napi_env env,
-                                              napi_value code,
-                                              napi_value msg,
-                                              napi_value* result) {
-  CHECK_ENV_NOT_IN_GC(env);
-  CHECK_ARG(env, msg);
-  CHECK_ARG(env, result);
+napi_status NAPI_CDECL napi_create_type_error(napi_env env, napi_value code, napi_value msg, napi_value *result) {
+    CHECK_ENV_NOT_IN_GC(env);
+    CHECK_ARG(env, msg);
+    CHECK_ARG(env, result);
 
-  v8::Local<v8::Value> message_value = v8impl::V8LocalValueFromJsValue(msg);
-  RETURN_STATUS_IF_FALSE(env, message_value->IsString(), napi_string_expected);
+    v8::Local<v8::Value> message_value = v8impl::V8LocalValueFromJsValue(msg);
+    RETURN_STATUS_IF_FALSE(env, message_value->IsString(), napi_string_expected);
 
-  v8::Local<v8::Value> error_obj =
-      v8::Exception::TypeError(message_value.As<v8::String>());
-  STATUS_CALL(set_error_code(env, error_obj, code, nullptr));
+    v8::Local<v8::Value> error_obj = v8::Exception::TypeError(message_value.As<v8::String>());
+    STATUS_CALL(set_error_code(env, error_obj, code, nullptr));
 
-  *result = v8impl::JsValueFromV8LocalValue(error_obj);
+    *result = v8impl::JsValueFromV8LocalValue(error_obj);
 
-  return napi_clear_last_error(env);
+    return napi_clear_last_error(env);
 }
 
 
-napi_status NAPI_CDECL napi_create_range_error(napi_env env,
-                                               napi_value code,
-                                               napi_value msg,
-                                               napi_value* result) {
-  CHECK_ENV_NOT_IN_GC(env);
-  CHECK_ARG(env, msg);
-  CHECK_ARG(env, result);
+napi_status NAPI_CDECL napi_create_range_error(napi_env env, napi_value code, napi_value msg, napi_value *result) {
+    CHECK_ENV_NOT_IN_GC(env);
+    CHECK_ARG(env, msg);
+    CHECK_ARG(env, result);
 
-  v8::Local<v8::Value> message_value = v8impl::V8LocalValueFromJsValue(msg);
-  RETURN_STATUS_IF_FALSE(env, message_value->IsString(), napi_string_expected);
+    v8::Local<v8::Value> message_value = v8impl::V8LocalValueFromJsValue(msg);
+    RETURN_STATUS_IF_FALSE(env, message_value->IsString(), napi_string_expected);
 
-  v8::Local<v8::Value> error_obj =
-      v8::Exception::RangeError(message_value.As<v8::String>());
-  STATUS_CALL(set_error_code(env, error_obj, code, nullptr));
+    v8::Local<v8::Value> error_obj = v8::Exception::RangeError(message_value.As<v8::String>());
+    STATUS_CALL(set_error_code(env, error_obj, code, nullptr));
 
-  *result = v8impl::JsValueFromV8LocalValue(error_obj);
+    *result = v8impl::JsValueFromV8LocalValue(error_obj);
 
-  return napi_clear_last_error(env);
+    return napi_clear_last_error(env);
 }
 
 
-napi_status NAPI_CDECL node_api_create_syntax_error(napi_env env,
-                                                    napi_value code,
-                                                    napi_value msg,
-                                                    napi_value* result) {
-  CHECK_ENV_NOT_IN_GC(env);
-  CHECK_ARG(env, msg);
-  CHECK_ARG(env, result);
+napi_status NAPI_CDECL node_api_create_syntax_error(napi_env env, napi_value code, napi_value msg, napi_value *result) {
+    CHECK_ENV_NOT_IN_GC(env);
+    CHECK_ARG(env, msg);
+    CHECK_ARG(env, result);
 
-  v8::Local<v8::Value> message_value = v8impl::V8LocalValueFromJsValue(msg);
-  RETURN_STATUS_IF_FALSE(env, message_value->IsString(), napi_string_expected);
+    v8::Local<v8::Value> message_value = v8impl::V8LocalValueFromJsValue(msg);
+    RETURN_STATUS_IF_FALSE(env, message_value->IsString(), napi_string_expected);
 
-  v8::Local<v8::Value> error_obj =
-      v8::Exception::SyntaxError(message_value.As<v8::String>());
-  STATUS_CALL(set_error_code(env, error_obj, code, nullptr));
+    v8::Local<v8::Value> error_obj = v8::Exception::SyntaxError(message_value.As<v8::String>());
+    STATUS_CALL(set_error_code(env, error_obj, code, nullptr));
 
-  *result = v8impl::JsValueFromV8LocalValue(error_obj);
+    *result = v8impl::JsValueFromV8LocalValue(error_obj);
 
-  return napi_clear_last_error(env);
+    return napi_clear_last_error(env);
 }
 
 
 napi_status NAPI_CDECL napi_throw(napi_env env, napi_value error) {
-  NAPI_PREAMBLE(env);
-  CHECK_ARG(env, error);
+    NAPI_PREAMBLE(env);
+    CHECK_ARG(env, error);
 
-  v8::Isolate* isolate = env->isolate;
+    v8::Isolate *isolate = env->isolate;
 
-  isolate->ThrowException(v8impl::V8LocalValueFromJsValue(error));
-  // any VM calls after this point and before returning
-  // to the javascript invoker will fail
-  return napi_clear_last_error(env);
+    isolate->ThrowException(v8impl::V8LocalValueFromJsValue(error));
+    // any VM calls after this point and before returning
+    // to the javascript invoker will fail
+    return napi_clear_last_error(env);
 }
 
 
-napi_status NAPI_CDECL napi_throw_error(napi_env env,
-                                        const char* code,
-                                        const char* msg) {
-  NAPI_PREAMBLE(env);
+napi_status NAPI_CDECL napi_throw_error(napi_env env, const char *code, const char *msg) {
+    NAPI_PREAMBLE(env);
 
-  v8::Isolate* isolate = env->isolate;
-  v8::Local<v8::String> str;
-  CHECK_NEW_FROM_UTF8(env, str, msg);
+    v8::Isolate *isolate = env->isolate;
+    v8::Local<v8::String> str;
+    CHECK_NEW_FROM_UTF8(env, str, msg);
 
-  v8::Local<v8::Value> error_obj = v8::Exception::Error(str);
-  STATUS_CALL(set_error_code(env, error_obj, nullptr, code));
+    v8::Local<v8::Value> error_obj = v8::Exception::Error(str);
+    STATUS_CALL(set_error_code(env, error_obj, nullptr, code));
 
-  isolate->ThrowException(error_obj);
-  // any VM calls after this point and before returning
-  // to the javascript invoker will fail
-  return napi_clear_last_error(env);
+    isolate->ThrowException(error_obj);
+    // any VM calls after this point and before returning
+    // to the javascript invoker will fail
+    return napi_clear_last_error(env);
 }
 
 
-napi_status NAPI_CDECL napi_throw_type_error(napi_env env,
-                                             const char* code,
-                                             const char* msg) {
-  NAPI_PREAMBLE(env);
+napi_status NAPI_CDECL napi_throw_type_error(napi_env env, const char *code, const char *msg) {
+    NAPI_PREAMBLE(env);
 
-  v8::Isolate* isolate = env->isolate;
-  v8::Local<v8::String> str;
-  CHECK_NEW_FROM_UTF8(env, str, msg);
+    v8::Isolate *isolate = env->isolate;
+    v8::Local<v8::String> str;
+    CHECK_NEW_FROM_UTF8(env, str, msg);
 
-  v8::Local<v8::Value> error_obj = v8::Exception::TypeError(str);
-  STATUS_CALL(set_error_code(env, error_obj, nullptr, code));
+    v8::Local<v8::Value> error_obj = v8::Exception::TypeError(str);
+    STATUS_CALL(set_error_code(env, error_obj, nullptr, code));
 
-  isolate->ThrowException(error_obj);
-  // any VM calls after this point and before returning
-  // to the javascript invoker will fail
-  return napi_clear_last_error(env);
+    isolate->ThrowException(error_obj);
+    // any VM calls after this point and before returning
+    // to the javascript invoker will fail
+    return napi_clear_last_error(env);
 }
 
 
-napi_status NAPI_CDECL napi_throw_range_error(napi_env env,
-                                              const char* code,
-                                              const char* msg) {
-  NAPI_PREAMBLE(env);
+napi_status NAPI_CDECL napi_throw_range_error(napi_env env, const char *code, const char *msg) {
+    NAPI_PREAMBLE(env);
 
-  v8::Isolate* isolate = env->isolate;
-  v8::Local<v8::String> str;
-  CHECK_NEW_FROM_UTF8(env, str, msg);
+    v8::Isolate *isolate = env->isolate;
+    v8::Local<v8::String> str;
+    CHECK_NEW_FROM_UTF8(env, str, msg);
 
-  v8::Local<v8::Value> error_obj = v8::Exception::RangeError(str);
-  STATUS_CALL(set_error_code(env, error_obj, nullptr, code));
+    v8::Local<v8::Value> error_obj = v8::Exception::RangeError(str);
+    STATUS_CALL(set_error_code(env, error_obj, nullptr, code));
 
-  isolate->ThrowException(error_obj);
-  // any VM calls after this point and before returning
-  // to the javascript invoker will fail
-  return napi_clear_last_error(env);
+    isolate->ThrowException(error_obj);
+    // any VM calls after this point and before returning
+    // to the javascript invoker will fail
+    return napi_clear_last_error(env);
 }
 
 
-napi_status NAPI_CDECL node_api_throw_syntax_error(napi_env env,
-                                                   const char* code,
-                                                   const char* msg) {
-  NAPI_PREAMBLE(env);
+napi_status NAPI_CDECL node_api_throw_syntax_error(napi_env env, const char *code, const char *msg) {
+    NAPI_PREAMBLE(env);
 
-  v8::Isolate* isolate = env->isolate;
-  v8::Local<v8::String> str;
-  CHECK_NEW_FROM_UTF8(env, str, msg);
+    v8::Isolate *isolate = env->isolate;
+    v8::Local<v8::String> str;
+    CHECK_NEW_FROM_UTF8(env, str, msg);
 
-  v8::Local<v8::Value> error_obj = v8::Exception::SyntaxError(str);
-  STATUS_CALL(set_error_code(env, error_obj, nullptr, code));
+    v8::Local<v8::Value> error_obj = v8::Exception::SyntaxError(str);
+    STATUS_CALL(set_error_code(env, error_obj, nullptr, code));
 
-  isolate->ThrowException(error_obj);
-  // any VM calls after this point and before returning
-  // to the javascript invoker will fail
-  return napi_clear_last_error(env);
+    isolate->ThrowException(error_obj);
+    // any VM calls after this point and before returning
+    // to the javascript invoker will fail
+    return napi_clear_last_error(env);
 }
 
 
-napi_status NAPI_CDECL napi_is_error(napi_env env,
-                                     napi_value value,
-                                     bool* result) {
-  // Omit NAPI_PREAMBLE and GET_RETURN_STATUS because V8 calls here cannot
-  // throw JS exceptions.
-  CHECK_ENV_NOT_IN_GC(env);
-  CHECK_ARG(env, value);
-  CHECK_ARG(env, result);
+napi_status NAPI_CDECL napi_is_error(napi_env env, napi_value value, bool *result) {
+    // Omit NAPI_PREAMBLE and GET_RETURN_STATUS because V8 calls here cannot
+    // throw JS exceptions.
+    CHECK_ENV_NOT_IN_GC(env);
+    CHECK_ARG(env, value);
+    CHECK_ARG(env, result);
 
-  v8::Local<v8::Value> val = v8impl::V8LocalValueFromJsValue(value);
-  *result = val->IsNativeError();
+    v8::Local<v8::Value> val = v8impl::V8LocalValueFromJsValue(value);
+    *result = val->IsNativeError();
 
-  return napi_clear_last_error(env);
+    return napi_clear_last_error(env);
 }
 
 
-napi_status NAPI_CDECL napi_is_exception_pending(napi_env env, bool* result) {
-  // NAPI_PREAMBLE is not used here: this function must execute when there is a
-  // pending exception.
-  CHECK_ENV_NOT_IN_GC(env);
-  CHECK_ARG(env, result);
+napi_status NAPI_CDECL napi_is_exception_pending(napi_env env, bool *result) {
+    // NAPI_PREAMBLE is not used here: this function must execute when there is a
+    // pending exception.
+    CHECK_ENV_NOT_IN_GC(env);
+    CHECK_ARG(env, result);
 
-  *result = !env->last_exception.IsEmpty();
-  return napi_clear_last_error(env);
+    *result = !env->last_exception.IsEmpty();
+    return napi_clear_last_error(env);
 }
 
 
-napi_status NAPI_CDECL napi_get_and_clear_last_exception(napi_env env,
-                                                         napi_value* result) {
-  // NAPI_PREAMBLE is not used here: this function must execute when there is a
-  // pending exception.
-  CHECK_ENV_NOT_IN_GC(env);
-  CHECK_ARG(env, result);
+napi_status NAPI_CDECL napi_get_and_clear_last_exception(napi_env env, napi_value *result) {
+    // NAPI_PREAMBLE is not used here: this function must execute when there is a
+    // pending exception.
+    CHECK_ENV_NOT_IN_GC(env);
+    CHECK_ARG(env, result);
 
-  if (env->last_exception.IsEmpty()) {
-    return napi_get_undefined(env, result);
-  } else {
-    *result = v8impl::JsValueFromV8LocalValue(
-        v8::Local<v8::Value>::New(env->isolate, env->last_exception));
-    env->last_exception.Reset();
-  }
+    if (env->last_exception.IsEmpty()) {
+        return napi_get_undefined(env, result);
+    } else {
+        *result = v8impl::JsValueFromV8LocalValue(v8::Local<v8::Value>::New(env->isolate, env->last_exception));
+        env->last_exception.Reset();
+    }
 
-  return napi_clear_last_error(env);
+    return napi_clear_last_error(env);
 }
-

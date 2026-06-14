@@ -5,562 +5,472 @@
 #include <climits>
 #include <cmath>
 #define NAPI_EXPERIMENTAL
-#include "napi/js_native_api.h"
-#include "napi/node_api.h"
 #include "js_native_api_v8.h"
 #include "js_native_api_v8_impl.h"
+#include "napi/js_native_api.h"
+#include "napi/node_api.h"
 
-#define CHECK_MAYBE_NOTHING(env, maybe, status)                                \
-  RETURN_STATUS_IF_FALSE((env), !((maybe).IsNothing()), (status))
+#define CHECK_MAYBE_NOTHING(env, maybe, status) RETURN_STATUS_IF_FALSE((env), !((maybe).IsNothing()), (status))
 
-#define CHECK_MAYBE_NOTHING_WITH_PREAMBLE(env, maybe, status)                  \
-  RETURN_STATUS_IF_FALSE_WITH_PREAMBLE((env), !((maybe).IsNothing()), (status))
+#define CHECK_MAYBE_NOTHING_WITH_PREAMBLE(env, maybe, status)                                                          \
+    RETURN_STATUS_IF_FALSE_WITH_PREAMBLE((env), !((maybe).IsNothing()), (status))
 
-#define CHECK_TO_NUMBER(env, context, result, src)                             \
-  CHECK_TO_TYPE((env), Number, (context), (result), (src), napi_number_expected)
+#define CHECK_TO_NUMBER(env, context, result, src)                                                                     \
+    CHECK_TO_TYPE((env), Number, (context), (result), (src), napi_number_expected)
 
-#define CHECK_NEW_FROM_UTF8_LEN(env, result, str, len)                         \
-  do {                                                                         \
-    static_assert(static_cast<int>(NAPI_AUTO_LENGTH) == -1,                    \
-                  "Casting NAPI_AUTO_LENGTH to int must result in -1");        \
-    RETURN_STATUS_IF_FALSE(                                                    \
-        (env), (len == NAPI_AUTO_LENGTH) || len <= INT_MAX, napi_invalid_arg); \
-    RETURN_STATUS_IF_FALSE((env), (str) != nullptr, napi_invalid_arg);         \
-    auto str_maybe = v8::String::NewFromUtf8((env)->isolate,                   \
-                                             (str),                            \
-                                             v8::NewStringType::kInternalized, \
-                                             static_cast<int>(len));           \
-    CHECK_MAYBE_EMPTY((env), str_maybe, napi_generic_failure);                 \
-    (result) = str_maybe.ToLocalChecked();                                     \
-  } while (0)
+#define CHECK_NEW_FROM_UTF8_LEN(env, result, str, len)                                                                 \
+    do {                                                                                                               \
+        static_assert(static_cast<int>(NAPI_AUTO_LENGTH) == -1, "Casting NAPI_AUTO_LENGTH to int must result in -1");  \
+        RETURN_STATUS_IF_FALSE((env), (len == NAPI_AUTO_LENGTH) || len <= INT_MAX, napi_invalid_arg);                  \
+        RETURN_STATUS_IF_FALSE((env), (str) != nullptr, napi_invalid_arg);                                             \
+        auto str_maybe = v8::String::NewFromUtf8((env)->isolate, (str), v8::NewStringType::kInternalized,              \
+                                                 static_cast<int>(len));                                               \
+        CHECK_MAYBE_EMPTY((env), str_maybe, napi_generic_failure);                                                     \
+        (result) = str_maybe.ToLocalChecked();                                                                         \
+    } while (0)
 
-#define CHECK_NEW_FROM_UTF8(env, result, str)                                  \
-  CHECK_NEW_FROM_UTF8_LEN((env), (result), (str), NAPI_AUTO_LENGTH)
+#define CHECK_NEW_FROM_UTF8(env, result, str) CHECK_NEW_FROM_UTF8_LEN((env), (result), (str), NAPI_AUTO_LENGTH)
 
-#define CREATE_TYPED_ARRAY(                                                    \
-    env, type, size_of_element, buffer, byte_offset, length, out)              \
-  do {                                                                         \
-    if ((size_of_element) > 1) {                                               \
-      THROW_RANGE_ERROR_IF_FALSE(                                              \
-          (env),                                                               \
-          (byte_offset) % (size_of_element) == 0,                              \
-          "ERR_NAPI_INVALID_TYPEDARRAY_ALIGNMENT",                             \
-          "start offset of " #type                                             \
-          " should be a multiple of " #size_of_element);                       \
-    }                                                                          \
-    THROW_RANGE_ERROR_IF_FALSE(                                                \
-        (env),                                                                 \
-        (length) * (size_of_element) + (byte_offset) <= buffer->ByteLength(),  \
-        "ERR_NAPI_INVALID_TYPEDARRAY_LENGTH",                                  \
-        "Invalid typed array length");                                         \
-    (out) = v8::type::New((buffer), (byte_offset), (length));                  \
-  } while (0)
+#define CREATE_TYPED_ARRAY(env, type, size_of_element, buffer, byte_offset, length, out)                               \
+    do {                                                                                                               \
+        if ((size_of_element) > 1) {                                                                                   \
+            THROW_RANGE_ERROR_IF_FALSE((env), (byte_offset) % (size_of_element) == 0,                                  \
+                                       "ERR_NAPI_INVALID_TYPEDARRAY_ALIGNMENT",                                        \
+                                       "start offset of " #type " should be a multiple of " #size_of_element);         \
+        }                                                                                                              \
+        THROW_RANGE_ERROR_IF_FALSE((env), (length) * (size_of_element) + (byte_offset) <= buffer->ByteLength(),        \
+                                   "ERR_NAPI_INVALID_TYPEDARRAY_LENGTH", "Invalid typed array length");                \
+        (out) = v8::type::New((buffer), (byte_offset), (length));                                                      \
+    } while (0)
 
-napi_status NAPI_CDECL napi_get_property_names(napi_env env,
-                                               napi_value object,
-                                               napi_value* result) {
-  return napi_get_all_property_names(
-      env,
-      object,
-      napi_key_include_prototypes,
-      static_cast<napi_key_filter>(napi_key_enumerable | napi_key_skip_symbols),
-      napi_key_numbers_to_strings,
-      result);
+napi_status NAPI_CDECL napi_get_property_names(napi_env env, napi_value object, napi_value *result) {
+    return napi_get_all_property_names(env, object, napi_key_include_prototypes,
+                                       static_cast<napi_key_filter>(napi_key_enumerable | napi_key_skip_symbols),
+                                       napi_key_numbers_to_strings, result);
 }
 
 
-napi_status NAPI_CDECL
-napi_get_all_property_names(napi_env env,
-                            napi_value object,
-                            napi_key_collection_mode key_mode,
-                            napi_key_filter key_filter,
-                            napi_key_conversion key_conversion,
-                            napi_value* result) {
-  NAPI_PREAMBLE(env);
-  CHECK_ARG(env, result);
-
-  v8::Local<v8::Context> context = env->context();
-  v8::Local<v8::Object> obj;
-  CHECK_TO_OBJECT(env, context, obj, object);
-
-  v8::PropertyFilter filter = v8::PropertyFilter::ALL_PROPERTIES;
-  if (key_filter & napi_key_writable) {
-    filter = static_cast<v8::PropertyFilter>(filter |
-                                             v8::PropertyFilter::ONLY_WRITABLE);
-  }
-  if (key_filter & napi_key_enumerable) {
-    filter = static_cast<v8::PropertyFilter>(
-        filter | v8::PropertyFilter::ONLY_ENUMERABLE);
-  }
-  if (key_filter & napi_key_configurable) {
-    filter = static_cast<v8::PropertyFilter>(
-        filter | v8::PropertyFilter::ONLY_CONFIGURABLE);
-  }
-  if (key_filter & napi_key_skip_strings) {
-    filter = static_cast<v8::PropertyFilter>(filter |
-                                             v8::PropertyFilter::SKIP_STRINGS);
-  }
-  if (key_filter & napi_key_skip_symbols) {
-    filter = static_cast<v8::PropertyFilter>(filter |
-                                             v8::PropertyFilter::SKIP_SYMBOLS);
-  }
-  v8::KeyCollectionMode collection_mode;
-  v8::KeyConversionMode conversion_mode;
-
-  switch (key_mode) {
-    case napi_key_include_prototypes:
-      collection_mode = v8::KeyCollectionMode::kIncludePrototypes;
-      break;
-    case napi_key_own_only:
-      collection_mode = v8::KeyCollectionMode::kOwnOnly;
-      break;
-    default:
-      return napi_set_last_error(env, napi_invalid_arg);
-  }
-
-  switch (key_conversion) {
-    case napi_key_keep_numbers:
-      conversion_mode = v8::KeyConversionMode::kKeepNumbers;
-      break;
-    case napi_key_numbers_to_strings:
-      conversion_mode = v8::KeyConversionMode::kConvertToString;
-      break;
-    default:
-      return napi_set_last_error(env, napi_invalid_arg);
-  }
-
-  v8::MaybeLocal<v8::Array> maybe_all_propertynames =
-      obj->GetPropertyNames(context,
-                            collection_mode,
-                            filter,
-                            v8::IndexFilter::kIncludeIndices,
-                            conversion_mode);
-
-  CHECK_MAYBE_EMPTY_WITH_PREAMBLE(
-      env, maybe_all_propertynames, napi_generic_failure);
-
-  *result =
-      v8impl::JsValueFromV8LocalValue(maybe_all_propertynames.ToLocalChecked());
-  return GET_RETURN_STATUS(env);
-}
-
-
-napi_status NAPI_CDECL napi_set_property(napi_env env,
-                                         napi_value object,
-                                         napi_value key,
-                                         napi_value value) {
-  NAPI_PREAMBLE(env);
-  CHECK_ARG(env, key);
-  CHECK_ARG(env, value);
-
-  v8::Local<v8::Context> context = env->context();
-  v8::Local<v8::Object> obj;
-
-  CHECK_TO_OBJECT(env, context, obj, object);
-
-  v8::Local<v8::Value> k = v8impl::V8LocalValueFromJsValue(key);
-  v8::Local<v8::Value> val = v8impl::V8LocalValueFromJsValue(value);
-
-  v8::Maybe<bool> set_maybe = obj->Set(context, k, val);
-
-  RETURN_STATUS_IF_FALSE_WITH_PREAMBLE(
-      env, set_maybe.FromMaybe(false), napi_generic_failure);
-  return GET_RETURN_STATUS(env);
-}
-
-
-napi_status NAPI_CDECL napi_has_property(napi_env env,
-                                         napi_value object,
-                                         napi_value key,
-                                         bool* result) {
-  NAPI_PREAMBLE(env);
-  CHECK_ARG(env, result);
-  CHECK_ARG(env, key);
-
-  v8::Local<v8::Context> context = env->context();
-  v8::Local<v8::Object> obj;
-
-  CHECK_TO_OBJECT(env, context, obj, object);
-
-  v8::Local<v8::Value> k = v8impl::V8LocalValueFromJsValue(key);
-  v8::Maybe<bool> has_maybe = obj->Has(context, k);
-
-  CHECK_MAYBE_NOTHING_WITH_PREAMBLE(env, has_maybe, napi_generic_failure);
-
-  *result = has_maybe.FromMaybe(false);
-  return GET_RETURN_STATUS(env);
-}
-
-
-napi_status NAPI_CDECL napi_get_property(napi_env env,
-                                         napi_value object,
-                                         napi_value key,
-                                         napi_value* result) {
-  NAPI_PREAMBLE(env);
-  CHECK_ARG(env, key);
-  CHECK_ARG(env, result);
-
-  v8::Local<v8::Context> context = env->context();
-  v8::Local<v8::Value> k = v8impl::V8LocalValueFromJsValue(key);
-  v8::Local<v8::Object> obj;
-
-  CHECK_TO_OBJECT(env, context, obj, object);
-
-  auto get_maybe = obj->Get(context, k);
-
-  CHECK_MAYBE_EMPTY_WITH_PREAMBLE(env, get_maybe, napi_generic_failure);
-
-  v8::Local<v8::Value> val = get_maybe.ToLocalChecked();
-  *result = v8impl::JsValueFromV8LocalValue(val);
-  return GET_RETURN_STATUS(env);
-}
-
-
-napi_status NAPI_CDECL napi_delete_property(napi_env env,
-                                            napi_value object,
-                                            napi_value key,
-                                            bool* result) {
-  NAPI_PREAMBLE(env);
-  CHECK_ARG(env, key);
-
-  v8::Local<v8::Context> context = env->context();
-  v8::Local<v8::Value> k = v8impl::V8LocalValueFromJsValue(key);
-  v8::Local<v8::Object> obj;
-
-  CHECK_TO_OBJECT(env, context, obj, object);
-  v8::Maybe<bool> delete_maybe = obj->Delete(context, k);
-  CHECK_MAYBE_NOTHING_WITH_PREAMBLE(env, delete_maybe, napi_generic_failure);
-
-  if (result != nullptr) *result = delete_maybe.FromMaybe(false);
-
-  return GET_RETURN_STATUS(env);
-}
-
-
-napi_status NAPI_CDECL napi_has_own_property(napi_env env,
-                                             napi_value object,
-                                             napi_value key,
-                                             bool* result) {
-  NAPI_PREAMBLE(env);
-  CHECK_ARG(env, key);
-  CHECK_ARG(env, result);
-
-  v8::Local<v8::Context> context = env->context();
-  v8::Local<v8::Object> obj;
-
-  CHECK_TO_OBJECT(env, context, obj, object);
-  v8::Local<v8::Value> k = v8impl::V8LocalValueFromJsValue(key);
-  RETURN_STATUS_IF_FALSE(env, k->IsName(), napi_name_expected);
-  v8::Maybe<bool> has_maybe = obj->HasOwnProperty(context, k.As<v8::Name>());
-  CHECK_MAYBE_NOTHING_WITH_PREAMBLE(env, has_maybe, napi_generic_failure);
-  *result = has_maybe.FromMaybe(false);
-
-  return GET_RETURN_STATUS(env);
-}
-
-
-napi_status NAPI_CDECL napi_set_named_property(napi_env env,
-                                               napi_value object,
-                                               const char* utf8name,
-                                               napi_value value) {
-  NAPI_PREAMBLE(env);
-  CHECK_ARG(env, value);
-
-  v8::Local<v8::Context> context = env->context();
-  v8::Local<v8::Object> obj;
-
-  CHECK_TO_OBJECT(env, context, obj, object);
-
-  v8::Local<v8::Name> key;
-  CHECK_NEW_FROM_UTF8(env, key, utf8name);
-
-  v8::Local<v8::Value> val = v8impl::V8LocalValueFromJsValue(value);
-
-  v8::Maybe<bool> set_maybe = obj->Set(context, key, val);
-
-  RETURN_STATUS_IF_FALSE_WITH_PREAMBLE(
-      env, set_maybe.FromMaybe(false), napi_generic_failure);
-  return GET_RETURN_STATUS(env);
-}
-
-
-napi_status NAPI_CDECL napi_has_named_property(napi_env env,
-                                               napi_value object,
-                                               const char* utf8name,
-                                               bool* result) {
-  NAPI_PREAMBLE(env);
-  CHECK_ARG(env, result);
-
-  v8::Local<v8::Context> context = env->context();
-  v8::Local<v8::Object> obj;
-
-  CHECK_TO_OBJECT(env, context, obj, object);
-
-  v8::Local<v8::Name> key;
-  CHECK_NEW_FROM_UTF8(env, key, utf8name);
-
-  v8::Maybe<bool> has_maybe = obj->Has(context, key);
-
-  CHECK_MAYBE_NOTHING_WITH_PREAMBLE(env, has_maybe, napi_generic_failure);
-
-  *result = has_maybe.FromMaybe(false);
-  return GET_RETURN_STATUS(env);
-}
-
-
-napi_status NAPI_CDECL napi_get_named_property(napi_env env,
-                                               napi_value object,
-                                               const char* utf8name,
-                                               napi_value* result) {
-  NAPI_PREAMBLE(env);
-  CHECK_ARG(env, result);
-
-  v8::Local<v8::Context> context = env->context();
-
-  v8::Local<v8::Name> key;
-  CHECK_NEW_FROM_UTF8(env, key, utf8name);
-
-  v8::Local<v8::Object> obj;
-
-  CHECK_TO_OBJECT(env, context, obj, object);
-
-  auto get_maybe = obj->Get(context, key);
-
-  CHECK_MAYBE_EMPTY_WITH_PREAMBLE(env, get_maybe, napi_generic_failure);
-
-  v8::Local<v8::Value> val = get_maybe.ToLocalChecked();
-  *result = v8impl::JsValueFromV8LocalValue(val);
-  return GET_RETURN_STATUS(env);
-}
-
-
-napi_status NAPI_CDECL napi_set_element(napi_env env,
-                                        napi_value object,
-                                        uint32_t index,
-                                        napi_value value) {
-  NAPI_PREAMBLE(env);
-  CHECK_ARG(env, value);
-
-  v8::Local<v8::Context> context = env->context();
-  v8::Local<v8::Object> obj;
-
-  CHECK_TO_OBJECT(env, context, obj, object);
-
-  v8::Local<v8::Value> val = v8impl::V8LocalValueFromJsValue(value);
-  auto set_maybe = obj->Set(context, index, val);
-
-  RETURN_STATUS_IF_FALSE_WITH_PREAMBLE(
-      env, set_maybe.FromMaybe(false), napi_generic_failure);
-
-  return GET_RETURN_STATUS(env);
-}
-
-
-napi_status NAPI_CDECL napi_has_element(napi_env env,
-                                        napi_value object,
-                                        uint32_t index,
-                                        bool* result) {
-  NAPI_PREAMBLE(env);
-  CHECK_ARG(env, result);
-
-  v8::Local<v8::Context> context = env->context();
-  v8::Local<v8::Object> obj;
-
-  CHECK_TO_OBJECT(env, context, obj, object);
-
-  v8::Maybe<bool> has_maybe = obj->Has(context, index);
-
-  CHECK_MAYBE_NOTHING_WITH_PREAMBLE(env, has_maybe, napi_generic_failure);
-
-  *result = has_maybe.FromMaybe(false);
-  return GET_RETURN_STATUS(env);
-}
-
-
-napi_status NAPI_CDECL napi_get_element(napi_env env,
-                                        napi_value object,
-                                        uint32_t index,
-                                        napi_value* result) {
-  NAPI_PREAMBLE(env);
-  CHECK_ARG(env, result);
-
-  v8::Local<v8::Context> context = env->context();
-  v8::Local<v8::Object> obj;
-
-  CHECK_TO_OBJECT(env, context, obj, object);
-
-  auto get_maybe = obj->Get(context, index);
-
-  CHECK_MAYBE_EMPTY_WITH_PREAMBLE(env, get_maybe, napi_generic_failure);
-
-  *result = v8impl::JsValueFromV8LocalValue(get_maybe.ToLocalChecked());
-  return GET_RETURN_STATUS(env);
-}
-
-
-napi_status NAPI_CDECL napi_delete_element(napi_env env,
-                                           napi_value object,
-                                           uint32_t index,
-                                           bool* result) {
-  NAPI_PREAMBLE(env);
-
-  v8::Local<v8::Context> context = env->context();
-  v8::Local<v8::Object> obj;
-
-  CHECK_TO_OBJECT(env, context, obj, object);
-  v8::Maybe<bool> delete_maybe = obj->Delete(context, index);
-  CHECK_MAYBE_NOTHING_WITH_PREAMBLE(env, delete_maybe, napi_generic_failure);
-
-  if (result != nullptr) *result = delete_maybe.FromMaybe(false);
-
-  return GET_RETURN_STATUS(env);
-}
-
-
-napi_status NAPI_CDECL
-napi_define_properties(napi_env env,
-                       napi_value object,
-                       size_t property_count,
-                       const napi_property_descriptor* properties) {
-  NAPI_PREAMBLE(env);
-  if (property_count > 0) {
-    CHECK_ARG(env, properties);
-  }
-
-  v8::Local<v8::Context> context = env->context();
-
-  v8::Local<v8::Object> obj;
-  CHECK_TO_OBJECT(env, context, obj, object);
-
-  for (size_t i = 0; i < property_count; i++) {
-    const napi_property_descriptor* p = &properties[i];
-
-    v8::Local<v8::Name> property_name;
-    STATUS_CALL(v8impl::V8NameFromPropertyDescriptor(env, p, &property_name));
-
-    if (p->getter != nullptr || p->setter != nullptr) {
-      v8::Local<v8::Function> local_getter;
-      v8::Local<v8::Function> local_setter;
-
-      if (p->getter != nullptr) {
-        STATUS_CALL(v8impl::FunctionCallbackWrapper::NewFunction(
-            env, p->getter, p->data, &local_getter));
-      }
-      if (p->setter != nullptr) {
-        STATUS_CALL(v8impl::FunctionCallbackWrapper::NewFunction(
-            env, p->setter, p->data, &local_setter));
-      }
-
-      v8::PropertyDescriptor descriptor(local_getter, local_setter);
-      descriptor.set_enumerable((p->attributes & napi_enumerable) != 0);
-      descriptor.set_configurable((p->attributes & napi_configurable) != 0);
-
-      auto define_maybe =
-          obj->DefineProperty(context, property_name, descriptor);
-
-      RETURN_STATUS_IF_FALSE_WITH_PREAMBLE(
-          env, define_maybe.FromMaybe(false), napi_invalid_arg);
-    } else if (p->method != nullptr) {
-      v8::Local<v8::Function> method;
-      STATUS_CALL(v8impl::FunctionCallbackWrapper::NewFunction(
-          env, p->method, p->data, &method));
-      v8::PropertyDescriptor descriptor(method,
-                                        (p->attributes & napi_writable) != 0);
-      descriptor.set_enumerable((p->attributes & napi_enumerable) != 0);
-      descriptor.set_configurable((p->attributes & napi_configurable) != 0);
-
-      auto define_maybe =
-          obj->DefineProperty(context, property_name, descriptor);
-
-      RETURN_STATUS_IF_FALSE_WITH_PREAMBLE(
-          env, define_maybe.FromMaybe(false), napi_generic_failure);
-    } else {
-      v8::Local<v8::Value> value = v8impl::V8LocalValueFromJsValue(p->value);
-      v8::Maybe<bool> define_maybe = v8::Just(false);
-
-      if ((p->attributes & napi_enumerable) &&
-          (p->attributes & napi_writable) &&
-          (p->attributes & napi_configurable)) {
-        // Use a fast path for this type of data property.
-        define_maybe = obj->CreateDataProperty(context, property_name, value);
-      } else {
-        v8::PropertyDescriptor descriptor(value,
-                                          (p->attributes & napi_writable) != 0);
-        descriptor.set_enumerable((p->attributes & napi_enumerable) != 0);
-        descriptor.set_configurable((p->attributes & napi_configurable) != 0);
-
-        define_maybe = obj->DefineProperty(context, property_name, descriptor);
-      }
-
-      RETURN_STATUS_IF_FALSE_WITH_PREAMBLE(
-          env, define_maybe.FromMaybe(false), napi_invalid_arg);
+napi_status NAPI_CDECL napi_get_all_property_names(napi_env env, napi_value object, napi_key_collection_mode key_mode,
+                                                   napi_key_filter key_filter, napi_key_conversion key_conversion,
+                                                   napi_value *result) {
+    NAPI_PREAMBLE(env);
+    CHECK_ARG(env, result);
+
+    v8::Local<v8::Context> context = env->context();
+    v8::Local<v8::Object> obj;
+    CHECK_TO_OBJECT(env, context, obj, object);
+
+    v8::PropertyFilter filter = v8::PropertyFilter::ALL_PROPERTIES;
+    if (key_filter & napi_key_writable) {
+        filter = static_cast<v8::PropertyFilter>(filter | v8::PropertyFilter::ONLY_WRITABLE);
     }
-  }
+    if (key_filter & napi_key_enumerable) {
+        filter = static_cast<v8::PropertyFilter>(filter | v8::PropertyFilter::ONLY_ENUMERABLE);
+    }
+    if (key_filter & napi_key_configurable) {
+        filter = static_cast<v8::PropertyFilter>(filter | v8::PropertyFilter::ONLY_CONFIGURABLE);
+    }
+    if (key_filter & napi_key_skip_strings) {
+        filter = static_cast<v8::PropertyFilter>(filter | v8::PropertyFilter::SKIP_STRINGS);
+    }
+    if (key_filter & napi_key_skip_symbols) {
+        filter = static_cast<v8::PropertyFilter>(filter | v8::PropertyFilter::SKIP_SYMBOLS);
+    }
+    v8::KeyCollectionMode collection_mode;
+    v8::KeyConversionMode conversion_mode;
 
-  return GET_RETURN_STATUS(env);
+    switch (key_mode) {
+        case napi_key_include_prototypes:
+            collection_mode = v8::KeyCollectionMode::kIncludePrototypes;
+            break;
+        case napi_key_own_only:
+            collection_mode = v8::KeyCollectionMode::kOwnOnly;
+            break;
+        default:
+            return napi_set_last_error(env, napi_invalid_arg);
+    }
+
+    switch (key_conversion) {
+        case napi_key_keep_numbers:
+            conversion_mode = v8::KeyConversionMode::kKeepNumbers;
+            break;
+        case napi_key_numbers_to_strings:
+            conversion_mode = v8::KeyConversionMode::kConvertToString;
+            break;
+        default:
+            return napi_set_last_error(env, napi_invalid_arg);
+    }
+
+    v8::MaybeLocal<v8::Array> maybe_all_propertynames =
+            obj->GetPropertyNames(context, collection_mode, filter, v8::IndexFilter::kIncludeIndices, conversion_mode);
+
+    CHECK_MAYBE_EMPTY_WITH_PREAMBLE(env, maybe_all_propertynames, napi_generic_failure);
+
+    *result = v8impl::JsValueFromV8LocalValue(maybe_all_propertynames.ToLocalChecked());
+    return GET_RETURN_STATUS(env);
+}
+
+
+napi_status NAPI_CDECL napi_set_property(napi_env env, napi_value object, napi_value key, napi_value value) {
+    NAPI_PREAMBLE(env);
+    CHECK_ARG(env, key);
+    CHECK_ARG(env, value);
+
+    v8::Local<v8::Context> context = env->context();
+    v8::Local<v8::Object> obj;
+
+    CHECK_TO_OBJECT(env, context, obj, object);
+
+    v8::Local<v8::Value> k = v8impl::V8LocalValueFromJsValue(key);
+    v8::Local<v8::Value> val = v8impl::V8LocalValueFromJsValue(value);
+
+    v8::Maybe<bool> set_maybe = obj->Set(context, k, val);
+
+    RETURN_STATUS_IF_FALSE_WITH_PREAMBLE(env, set_maybe.FromMaybe(false), napi_generic_failure);
+    return GET_RETURN_STATUS(env);
+}
+
+
+napi_status NAPI_CDECL napi_has_property(napi_env env, napi_value object, napi_value key, bool *result) {
+    NAPI_PREAMBLE(env);
+    CHECK_ARG(env, result);
+    CHECK_ARG(env, key);
+
+    v8::Local<v8::Context> context = env->context();
+    v8::Local<v8::Object> obj;
+
+    CHECK_TO_OBJECT(env, context, obj, object);
+
+    v8::Local<v8::Value> k = v8impl::V8LocalValueFromJsValue(key);
+    v8::Maybe<bool> has_maybe = obj->Has(context, k);
+
+    CHECK_MAYBE_NOTHING_WITH_PREAMBLE(env, has_maybe, napi_generic_failure);
+
+    *result = has_maybe.FromMaybe(false);
+    return GET_RETURN_STATUS(env);
+}
+
+
+napi_status NAPI_CDECL napi_get_property(napi_env env, napi_value object, napi_value key, napi_value *result) {
+    NAPI_PREAMBLE(env);
+    CHECK_ARG(env, key);
+    CHECK_ARG(env, result);
+
+    v8::Local<v8::Context> context = env->context();
+    v8::Local<v8::Value> k = v8impl::V8LocalValueFromJsValue(key);
+    v8::Local<v8::Object> obj;
+
+    CHECK_TO_OBJECT(env, context, obj, object);
+
+    auto get_maybe = obj->Get(context, k);
+
+    CHECK_MAYBE_EMPTY_WITH_PREAMBLE(env, get_maybe, napi_generic_failure);
+
+    v8::Local<v8::Value> val = get_maybe.ToLocalChecked();
+    *result = v8impl::JsValueFromV8LocalValue(val);
+    return GET_RETURN_STATUS(env);
+}
+
+
+napi_status NAPI_CDECL napi_delete_property(napi_env env, napi_value object, napi_value key, bool *result) {
+    NAPI_PREAMBLE(env);
+    CHECK_ARG(env, key);
+
+    v8::Local<v8::Context> context = env->context();
+    v8::Local<v8::Value> k = v8impl::V8LocalValueFromJsValue(key);
+    v8::Local<v8::Object> obj;
+
+    CHECK_TO_OBJECT(env, context, obj, object);
+    v8::Maybe<bool> delete_maybe = obj->Delete(context, k);
+    CHECK_MAYBE_NOTHING_WITH_PREAMBLE(env, delete_maybe, napi_generic_failure);
+
+    if (result != nullptr)
+        *result = delete_maybe.FromMaybe(false);
+
+    return GET_RETURN_STATUS(env);
+}
+
+
+napi_status NAPI_CDECL napi_has_own_property(napi_env env, napi_value object, napi_value key, bool *result) {
+    NAPI_PREAMBLE(env);
+    CHECK_ARG(env, key);
+    CHECK_ARG(env, result);
+
+    v8::Local<v8::Context> context = env->context();
+    v8::Local<v8::Object> obj;
+
+    CHECK_TO_OBJECT(env, context, obj, object);
+    v8::Local<v8::Value> k = v8impl::V8LocalValueFromJsValue(key);
+    RETURN_STATUS_IF_FALSE(env, k->IsName(), napi_name_expected);
+    v8::Maybe<bool> has_maybe = obj->HasOwnProperty(context, k.As<v8::Name>());
+    CHECK_MAYBE_NOTHING_WITH_PREAMBLE(env, has_maybe, napi_generic_failure);
+    *result = has_maybe.FromMaybe(false);
+
+    return GET_RETURN_STATUS(env);
+}
+
+
+napi_status NAPI_CDECL napi_set_named_property(napi_env env, napi_value object, const char *utf8name,
+                                               napi_value value) {
+    NAPI_PREAMBLE(env);
+    CHECK_ARG(env, value);
+
+    v8::Local<v8::Context> context = env->context();
+    v8::Local<v8::Object> obj;
+
+    CHECK_TO_OBJECT(env, context, obj, object);
+
+    v8::Local<v8::Name> key;
+    CHECK_NEW_FROM_UTF8(env, key, utf8name);
+
+    v8::Local<v8::Value> val = v8impl::V8LocalValueFromJsValue(value);
+
+    v8::Maybe<bool> set_maybe = obj->Set(context, key, val);
+
+    RETURN_STATUS_IF_FALSE_WITH_PREAMBLE(env, set_maybe.FromMaybe(false), napi_generic_failure);
+    return GET_RETURN_STATUS(env);
+}
+
+
+napi_status NAPI_CDECL napi_has_named_property(napi_env env, napi_value object, const char *utf8name, bool *result) {
+    NAPI_PREAMBLE(env);
+    CHECK_ARG(env, result);
+
+    v8::Local<v8::Context> context = env->context();
+    v8::Local<v8::Object> obj;
+
+    CHECK_TO_OBJECT(env, context, obj, object);
+
+    v8::Local<v8::Name> key;
+    CHECK_NEW_FROM_UTF8(env, key, utf8name);
+
+    v8::Maybe<bool> has_maybe = obj->Has(context, key);
+
+    CHECK_MAYBE_NOTHING_WITH_PREAMBLE(env, has_maybe, napi_generic_failure);
+
+    *result = has_maybe.FromMaybe(false);
+    return GET_RETURN_STATUS(env);
+}
+
+
+napi_status NAPI_CDECL napi_get_named_property(napi_env env, napi_value object, const char *utf8name,
+                                               napi_value *result) {
+    NAPI_PREAMBLE(env);
+    CHECK_ARG(env, result);
+
+    v8::Local<v8::Context> context = env->context();
+
+    v8::Local<v8::Name> key;
+    CHECK_NEW_FROM_UTF8(env, key, utf8name);
+
+    v8::Local<v8::Object> obj;
+
+    CHECK_TO_OBJECT(env, context, obj, object);
+
+    auto get_maybe = obj->Get(context, key);
+
+    CHECK_MAYBE_EMPTY_WITH_PREAMBLE(env, get_maybe, napi_generic_failure);
+
+    v8::Local<v8::Value> val = get_maybe.ToLocalChecked();
+    *result = v8impl::JsValueFromV8LocalValue(val);
+    return GET_RETURN_STATUS(env);
+}
+
+
+napi_status NAPI_CDECL napi_set_element(napi_env env, napi_value object, uint32_t index, napi_value value) {
+    NAPI_PREAMBLE(env);
+    CHECK_ARG(env, value);
+
+    v8::Local<v8::Context> context = env->context();
+    v8::Local<v8::Object> obj;
+
+    CHECK_TO_OBJECT(env, context, obj, object);
+
+    v8::Local<v8::Value> val = v8impl::V8LocalValueFromJsValue(value);
+    auto set_maybe = obj->Set(context, index, val);
+
+    RETURN_STATUS_IF_FALSE_WITH_PREAMBLE(env, set_maybe.FromMaybe(false), napi_generic_failure);
+
+    return GET_RETURN_STATUS(env);
+}
+
+
+napi_status NAPI_CDECL napi_has_element(napi_env env, napi_value object, uint32_t index, bool *result) {
+    NAPI_PREAMBLE(env);
+    CHECK_ARG(env, result);
+
+    v8::Local<v8::Context> context = env->context();
+    v8::Local<v8::Object> obj;
+
+    CHECK_TO_OBJECT(env, context, obj, object);
+
+    v8::Maybe<bool> has_maybe = obj->Has(context, index);
+
+    CHECK_MAYBE_NOTHING_WITH_PREAMBLE(env, has_maybe, napi_generic_failure);
+
+    *result = has_maybe.FromMaybe(false);
+    return GET_RETURN_STATUS(env);
+}
+
+
+napi_status NAPI_CDECL napi_get_element(napi_env env, napi_value object, uint32_t index, napi_value *result) {
+    NAPI_PREAMBLE(env);
+    CHECK_ARG(env, result);
+
+    v8::Local<v8::Context> context = env->context();
+    v8::Local<v8::Object> obj;
+
+    CHECK_TO_OBJECT(env, context, obj, object);
+
+    auto get_maybe = obj->Get(context, index);
+
+    CHECK_MAYBE_EMPTY_WITH_PREAMBLE(env, get_maybe, napi_generic_failure);
+
+    *result = v8impl::JsValueFromV8LocalValue(get_maybe.ToLocalChecked());
+    return GET_RETURN_STATUS(env);
+}
+
+
+napi_status NAPI_CDECL napi_delete_element(napi_env env, napi_value object, uint32_t index, bool *result) {
+    NAPI_PREAMBLE(env);
+
+    v8::Local<v8::Context> context = env->context();
+    v8::Local<v8::Object> obj;
+
+    CHECK_TO_OBJECT(env, context, obj, object);
+    v8::Maybe<bool> delete_maybe = obj->Delete(context, index);
+    CHECK_MAYBE_NOTHING_WITH_PREAMBLE(env, delete_maybe, napi_generic_failure);
+
+    if (result != nullptr)
+        *result = delete_maybe.FromMaybe(false);
+
+    return GET_RETURN_STATUS(env);
+}
+
+
+napi_status NAPI_CDECL napi_define_properties(napi_env env, napi_value object, size_t property_count,
+                                              const napi_property_descriptor *properties) {
+    NAPI_PREAMBLE(env);
+    if (property_count > 0) {
+        CHECK_ARG(env, properties);
+    }
+
+    v8::Local<v8::Context> context = env->context();
+
+    v8::Local<v8::Object> obj;
+    CHECK_TO_OBJECT(env, context, obj, object);
+
+    for (size_t i = 0; i < property_count; i++) {
+        const napi_property_descriptor *p = &properties[i];
+
+        v8::Local<v8::Name> property_name;
+        STATUS_CALL(v8impl::V8NameFromPropertyDescriptor(env, p, &property_name));
+
+        if (p->getter != nullptr || p->setter != nullptr) {
+            v8::Local<v8::Function> local_getter;
+            v8::Local<v8::Function> local_setter;
+
+            if (p->getter != nullptr) {
+                STATUS_CALL(v8impl::FunctionCallbackWrapper::NewFunction(env, p->getter, p->data, &local_getter));
+            }
+            if (p->setter != nullptr) {
+                STATUS_CALL(v8impl::FunctionCallbackWrapper::NewFunction(env, p->setter, p->data, &local_setter));
+            }
+
+            v8::PropertyDescriptor descriptor(local_getter, local_setter);
+            descriptor.set_enumerable((p->attributes & napi_enumerable) != 0);
+            descriptor.set_configurable((p->attributes & napi_configurable) != 0);
+
+            auto define_maybe = obj->DefineProperty(context, property_name, descriptor);
+
+            RETURN_STATUS_IF_FALSE_WITH_PREAMBLE(env, define_maybe.FromMaybe(false), napi_invalid_arg);
+        } else if (p->method != nullptr) {
+            v8::Local<v8::Function> method;
+            STATUS_CALL(v8impl::FunctionCallbackWrapper::NewFunction(env, p->method, p->data, &method));
+            v8::PropertyDescriptor descriptor(method, (p->attributes & napi_writable) != 0);
+            descriptor.set_enumerable((p->attributes & napi_enumerable) != 0);
+            descriptor.set_configurable((p->attributes & napi_configurable) != 0);
+
+            auto define_maybe = obj->DefineProperty(context, property_name, descriptor);
+
+            RETURN_STATUS_IF_FALSE_WITH_PREAMBLE(env, define_maybe.FromMaybe(false), napi_generic_failure);
+        } else {
+            v8::Local<v8::Value> value = v8impl::V8LocalValueFromJsValue(p->value);
+            v8::Maybe<bool> define_maybe = v8::Just(false);
+
+            if ((p->attributes & napi_enumerable) && (p->attributes & napi_writable) &&
+                (p->attributes & napi_configurable)) {
+                // Use a fast path for this type of data property.
+                define_maybe = obj->CreateDataProperty(context, property_name, value);
+            } else {
+                v8::PropertyDescriptor descriptor(value, (p->attributes & napi_writable) != 0);
+                descriptor.set_enumerable((p->attributes & napi_enumerable) != 0);
+                descriptor.set_configurable((p->attributes & napi_configurable) != 0);
+
+                define_maybe = obj->DefineProperty(context, property_name, descriptor);
+            }
+
+            RETURN_STATUS_IF_FALSE_WITH_PREAMBLE(env, define_maybe.FromMaybe(false), napi_invalid_arg);
+        }
+    }
+
+    return GET_RETURN_STATUS(env);
 }
 
 
 napi_status NAPI_CDECL napi_object_freeze(napi_env env, napi_value object) {
-  NAPI_PREAMBLE(env);
+    NAPI_PREAMBLE(env);
 
-  v8::Local<v8::Context> context = env->context();
-  v8::Local<v8::Object> obj;
+    v8::Local<v8::Context> context = env->context();
+    v8::Local<v8::Object> obj;
 
-  CHECK_TO_OBJECT(env, context, obj, object);
+    CHECK_TO_OBJECT(env, context, obj, object);
 
-  v8::Maybe<bool> set_frozen =
-      obj->SetIntegrityLevel(context, v8::IntegrityLevel::kFrozen);
+    v8::Maybe<bool> set_frozen = obj->SetIntegrityLevel(context, v8::IntegrityLevel::kFrozen);
 
-  RETURN_STATUS_IF_FALSE_WITH_PREAMBLE(
-      env, set_frozen.FromMaybe(false), napi_generic_failure);
+    RETURN_STATUS_IF_FALSE_WITH_PREAMBLE(env, set_frozen.FromMaybe(false), napi_generic_failure);
 
-  return GET_RETURN_STATUS(env);
+    return GET_RETURN_STATUS(env);
 }
 
 
 napi_status NAPI_CDECL napi_object_seal(napi_env env, napi_value object) {
-  NAPI_PREAMBLE(env);
+    NAPI_PREAMBLE(env);
 
-  v8::Local<v8::Context> context = env->context();
-  v8::Local<v8::Object> obj;
+    v8::Local<v8::Context> context = env->context();
+    v8::Local<v8::Object> obj;
 
-  CHECK_TO_OBJECT(env, context, obj, object);
+    CHECK_TO_OBJECT(env, context, obj, object);
 
-  v8::Maybe<bool> set_sealed =
-      obj->SetIntegrityLevel(context, v8::IntegrityLevel::kSealed);
+    v8::Maybe<bool> set_sealed = obj->SetIntegrityLevel(context, v8::IntegrityLevel::kSealed);
 
-  RETURN_STATUS_IF_FALSE_WITH_PREAMBLE(
-      env, set_sealed.FromMaybe(false), napi_generic_failure);
+    RETURN_STATUS_IF_FALSE_WITH_PREAMBLE(env, set_sealed.FromMaybe(false), napi_generic_failure);
 
-  return GET_RETURN_STATUS(env);
+    return GET_RETURN_STATUS(env);
 }
 
 
-napi_status NAPI_CDECL napi_get_prototype(napi_env env,
-                                          napi_value object,
-                                          napi_value* result) {
-  NAPI_PREAMBLE(env);
-  CHECK_ARG(env, result);
+napi_status NAPI_CDECL napi_get_prototype(napi_env env, napi_value object, napi_value *result) {
+    NAPI_PREAMBLE(env);
+    CHECK_ARG(env, result);
 
-  v8::Local<v8::Context> context = env->context();
+    v8::Local<v8::Context> context = env->context();
 
-  v8::Local<v8::Object> obj;
-  CHECK_TO_OBJECT(env, context, obj, object);
+    v8::Local<v8::Object> obj;
+    CHECK_TO_OBJECT(env, context, obj, object);
 
-  // This doesn't invokes Proxy's [[GetPrototypeOf]] handler.
-  v8::Local<v8::Value> val = obj->GetPrototype();
-  *result = v8impl::JsValueFromV8LocalValue(val);
-  return GET_RETURN_STATUS(env);
+    // This doesn't invokes Proxy's [[GetPrototypeOf]] handler.
+    v8::Local<v8::Value> val = obj->GetPrototype();
+    *result = v8impl::JsValueFromV8LocalValue(val);
+    return GET_RETURN_STATUS(env);
 }
 
 
-napi_status NAPI_CDECL napi_create_object(napi_env env, napi_value* result) {
-  CHECK_ENV_NOT_IN_GC(env);
-  CHECK_ARG(env, result);
+napi_status NAPI_CDECL napi_create_object(napi_env env, napi_value *result) {
+    CHECK_ENV_NOT_IN_GC(env);
+    CHECK_ARG(env, result);
 
-  *result = v8impl::JsValueFromV8LocalValue(v8::Object::New(env->isolate));
+    *result = v8impl::JsValueFromV8LocalValue(v8::Object::New(env->isolate));
 
-  return napi_clear_last_error(env);
+    return napi_clear_last_error(env);
 }
-

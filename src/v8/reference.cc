@@ -5,150 +5,127 @@
 #include <climits>
 #include <cmath>
 #define NAPI_EXPERIMENTAL
-#include "napi/js_native_api.h"
-#include "napi/node_api.h"
 #include "js_native_api_v8.h"
 #include "js_native_api_v8_impl.h"
+#include "napi/js_native_api.h"
+#include "napi/node_api.h"
 
-#define CHECK_MAYBE_NOTHING(env, maybe, status)                                \
-  RETURN_STATUS_IF_FALSE((env), !((maybe).IsNothing()), (status))
+#define CHECK_MAYBE_NOTHING(env, maybe, status) RETURN_STATUS_IF_FALSE((env), !((maybe).IsNothing()), (status))
 
-#define CHECK_MAYBE_NOTHING_WITH_PREAMBLE(env, maybe, status)                  \
-  RETURN_STATUS_IF_FALSE_WITH_PREAMBLE((env), !((maybe).IsNothing()), (status))
+#define CHECK_MAYBE_NOTHING_WITH_PREAMBLE(env, maybe, status)                                                          \
+    RETURN_STATUS_IF_FALSE_WITH_PREAMBLE((env), !((maybe).IsNothing()), (status))
 
-#define CHECK_TO_NUMBER(env, context, result, src)                             \
-  CHECK_TO_TYPE((env), Number, (context), (result), (src), napi_number_expected)
+#define CHECK_TO_NUMBER(env, context, result, src)                                                                     \
+    CHECK_TO_TYPE((env), Number, (context), (result), (src), napi_number_expected)
 
-#define CHECK_NEW_FROM_UTF8_LEN(env, result, str, len)                         \
-  do {                                                                         \
-    static_assert(static_cast<int>(NAPI_AUTO_LENGTH) == -1,                    \
-                  "Casting NAPI_AUTO_LENGTH to int must result in -1");        \
-    RETURN_STATUS_IF_FALSE(                                                    \
-        (env), (len == NAPI_AUTO_LENGTH) || len <= INT_MAX, napi_invalid_arg); \
-    RETURN_STATUS_IF_FALSE((env), (str) != nullptr, napi_invalid_arg);         \
-    auto str_maybe = v8::String::NewFromUtf8((env)->isolate,                   \
-                                             (str),                            \
-                                             v8::NewStringType::kInternalized, \
-                                             static_cast<int>(len));           \
-    CHECK_MAYBE_EMPTY((env), str_maybe, napi_generic_failure);                 \
-    (result) = str_maybe.ToLocalChecked();                                     \
-  } while (0)
+#define CHECK_NEW_FROM_UTF8_LEN(env, result, str, len)                                                                 \
+    do {                                                                                                               \
+        static_assert(static_cast<int>(NAPI_AUTO_LENGTH) == -1, "Casting NAPI_AUTO_LENGTH to int must result in -1");  \
+        RETURN_STATUS_IF_FALSE((env), (len == NAPI_AUTO_LENGTH) || len <= INT_MAX, napi_invalid_arg);                  \
+        RETURN_STATUS_IF_FALSE((env), (str) != nullptr, napi_invalid_arg);                                             \
+        auto str_maybe = v8::String::NewFromUtf8((env)->isolate, (str), v8::NewStringType::kInternalized,              \
+                                                 static_cast<int>(len));                                               \
+        CHECK_MAYBE_EMPTY((env), str_maybe, napi_generic_failure);                                                     \
+        (result) = str_maybe.ToLocalChecked();                                                                         \
+    } while (0)
 
-#define CHECK_NEW_FROM_UTF8(env, result, str)                                  \
-  CHECK_NEW_FROM_UTF8_LEN((env), (result), (str), NAPI_AUTO_LENGTH)
+#define CHECK_NEW_FROM_UTF8(env, result, str) CHECK_NEW_FROM_UTF8_LEN((env), (result), (str), NAPI_AUTO_LENGTH)
 
-#define CREATE_TYPED_ARRAY(                                                    \
-    env, type, size_of_element, buffer, byte_offset, length, out)              \
-  do {                                                                         \
-    if ((size_of_element) > 1) {                                               \
-      THROW_RANGE_ERROR_IF_FALSE(                                              \
-          (env),                                                               \
-          (byte_offset) % (size_of_element) == 0,                              \
-          "ERR_NAPI_INVALID_TYPEDARRAY_ALIGNMENT",                             \
-          "start offset of " #type                                             \
-          " should be a multiple of " #size_of_element);                       \
-    }                                                                          \
-    THROW_RANGE_ERROR_IF_FALSE(                                                \
-        (env),                                                                 \
-        (length) * (size_of_element) + (byte_offset) <= buffer->ByteLength(),  \
-        "ERR_NAPI_INVALID_TYPEDARRAY_LENGTH",                                  \
-        "Invalid typed array length");                                         \
-    (out) = v8::type::New((buffer), (byte_offset), (length));                  \
-  } while (0)
+#define CREATE_TYPED_ARRAY(env, type, size_of_element, buffer, byte_offset, length, out)                               \
+    do {                                                                                                               \
+        if ((size_of_element) > 1) {                                                                                   \
+            THROW_RANGE_ERROR_IF_FALSE((env), (byte_offset) % (size_of_element) == 0,                                  \
+                                       "ERR_NAPI_INVALID_TYPEDARRAY_ALIGNMENT",                                        \
+                                       "start offset of " #type " should be a multiple of " #size_of_element);         \
+        }                                                                                                              \
+        THROW_RANGE_ERROR_IF_FALSE((env), (length) * (size_of_element) + (byte_offset) <= buffer->ByteLength(),        \
+                                   "ERR_NAPI_INVALID_TYPEDARRAY_LENGTH", "Invalid typed array length");                \
+        (out) = v8::type::New((buffer), (byte_offset), (length));                                                      \
+    } while (0)
 
-napi_status NAPI_CDECL napi_create_reference(napi_env env,
-                                             napi_value value,
-                                             uint32_t initial_refcount,
-                                             napi_ref* result) {
-  // Omit NAPI_PREAMBLE and GET_RETURN_STATUS because V8 calls here cannot throw
-  // JS exceptions.
-  CHECK_ENV_NOT_IN_GC(env);
-  CHECK_ARG(env, value);
-  CHECK_ARG(env, result);
+napi_status NAPI_CDECL napi_create_reference(napi_env env, napi_value value, uint32_t initial_refcount,
+                                             napi_ref *result) {
+    // Omit NAPI_PREAMBLE and GET_RETURN_STATUS because V8 calls here cannot throw
+    // JS exceptions.
+    CHECK_ENV_NOT_IN_GC(env);
+    CHECK_ARG(env, value);
+    CHECK_ARG(env, result);
 
-  v8::Local<v8::Value> v8_value = v8impl::V8LocalValueFromJsValue(value);
-  if (env->module_api_version != NAPI_VERSION_EXPERIMENTAL) {
-    if (!(v8_value->IsObject() || v8_value->IsFunction() ||
-          v8_value->IsSymbol())) {
-      return napi_set_last_error(env, napi_invalid_arg);
+    v8::Local<v8::Value> v8_value = v8impl::V8LocalValueFromJsValue(value);
+    if (env->module_api_version != NAPI_VERSION_EXPERIMENTAL) {
+        if (!(v8_value->IsObject() || v8_value->IsFunction() || v8_value->IsSymbol())) {
+            return napi_set_last_error(env, napi_invalid_arg);
+        }
     }
-  }
 
-  v8impl::Reference* reference = v8impl::Reference::New(
-      env, v8_value, initial_refcount, v8impl::ReferenceOwnership::kUserland);
+    v8impl::Reference *reference =
+            v8impl::Reference::New(env, v8_value, initial_refcount, v8impl::ReferenceOwnership::kUserland);
 
-  *result = reinterpret_cast<napi_ref>(reference);
-  return napi_clear_last_error(env);
+    *result = reinterpret_cast<napi_ref>(reference);
+    return napi_clear_last_error(env);
 }
 
 
 napi_status NAPI_CDECL napi_delete_reference(napi_env env, napi_ref ref) {
-  // Omit NAPI_PREAMBLE and GET_RETURN_STATUS because V8 calls here cannot throw
-  // JS exceptions.
-  CHECK_ENV_NOT_IN_GC(env);
-  CHECK_ARG(env, ref);
+    // Omit NAPI_PREAMBLE and GET_RETURN_STATUS because V8 calls here cannot throw
+    // JS exceptions.
+    CHECK_ENV_NOT_IN_GC(env);
+    CHECK_ARG(env, ref);
 
-  delete reinterpret_cast<v8impl::Reference*>(ref);
+    delete reinterpret_cast<v8impl::Reference *>(ref);
 
-  return napi_clear_last_error(env);
+    return napi_clear_last_error(env);
 }
 
 
-napi_status NAPI_CDECL napi_reference_ref(napi_env env,
-                                          napi_ref ref,
-                                          uint32_t* result) {
-  // Omit NAPI_PREAMBLE and GET_RETURN_STATUS because V8 calls here cannot throw
-  // JS exceptions.
-  CHECK_ENV_NOT_IN_GC(env);
-  CHECK_ARG(env, ref);
+napi_status NAPI_CDECL napi_reference_ref(napi_env env, napi_ref ref, uint32_t *result) {
+    // Omit NAPI_PREAMBLE and GET_RETURN_STATUS because V8 calls here cannot throw
+    // JS exceptions.
+    CHECK_ENV_NOT_IN_GC(env);
+    CHECK_ARG(env, ref);
 
-  v8impl::Reference* reference = reinterpret_cast<v8impl::Reference*>(ref);
-  uint32_t count = reference->Ref();
+    v8impl::Reference *reference = reinterpret_cast<v8impl::Reference *>(ref);
+    uint32_t count = reference->Ref();
 
-  if (result != nullptr) {
-    *result = count;
-  }
+    if (result != nullptr) {
+        *result = count;
+    }
 
-  return napi_clear_last_error(env);
+    return napi_clear_last_error(env);
 }
 
 
-napi_status NAPI_CDECL napi_reference_unref(napi_env env,
-                                            napi_ref ref,
-                                            uint32_t* result) {
-  // Omit NAPI_PREAMBLE and GET_RETURN_STATUS because V8 calls here cannot throw
-  // JS exceptions.
-  CHECK_ENV_NOT_IN_GC(env);
-  CHECK_ARG(env, ref);
+napi_status NAPI_CDECL napi_reference_unref(napi_env env, napi_ref ref, uint32_t *result) {
+    // Omit NAPI_PREAMBLE and GET_RETURN_STATUS because V8 calls here cannot throw
+    // JS exceptions.
+    CHECK_ENV_NOT_IN_GC(env);
+    CHECK_ARG(env, ref);
 
-  v8impl::Reference* reference = reinterpret_cast<v8impl::Reference*>(ref);
+    v8impl::Reference *reference = reinterpret_cast<v8impl::Reference *>(ref);
 
-  if (reference->refcount() == 0) {
-    return napi_set_last_error(env, napi_generic_failure);
-  }
+    if (reference->refcount() == 0) {
+        return napi_set_last_error(env, napi_generic_failure);
+    }
 
-  uint32_t count = reference->Unref();
+    uint32_t count = reference->Unref();
 
-  if (result != nullptr) {
-    *result = count;
-  }
+    if (result != nullptr) {
+        *result = count;
+    }
 
-  return napi_clear_last_error(env);
+    return napi_clear_last_error(env);
 }
 
 
-napi_status NAPI_CDECL napi_get_reference_value(napi_env env,
-                                                napi_ref ref,
-                                                napi_value* result) {
-  // Omit NAPI_PREAMBLE and GET_RETURN_STATUS because V8 calls here cannot throw
-  // JS exceptions.
-  CHECK_ENV_NOT_IN_GC(env);
-  CHECK_ARG(env, ref);
-  CHECK_ARG(env, result);
+napi_status NAPI_CDECL napi_get_reference_value(napi_env env, napi_ref ref, napi_value *result) {
+    // Omit NAPI_PREAMBLE and GET_RETURN_STATUS because V8 calls here cannot throw
+    // JS exceptions.
+    CHECK_ENV_NOT_IN_GC(env);
+    CHECK_ARG(env, ref);
+    CHECK_ARG(env, result);
 
-  v8impl::Reference* reference = reinterpret_cast<v8impl::Reference*>(ref);
-  *result = v8impl::JsValueFromV8LocalValue(reference->Get(env));
+    v8impl::Reference *reference = reinterpret_cast<v8impl::Reference *>(ref);
+    *result = v8impl::JsValueFromV8LocalValue(reference->Get(env));
 
-  return napi_clear_last_error(env);
+    return napi_clear_last_error(env);
 }
-

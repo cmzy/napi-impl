@@ -5,275 +5,213 @@
 #include <climits>
 #include <cmath>
 #define NAPI_EXPERIMENTAL
-#include "napi/js_native_api.h"
-#include "napi/node_api.h"
 #include "js_native_api_v8.h"
 #include "js_native_api_v8_impl.h"
+#include "napi/js_native_api.h"
+#include "napi/node_api.h"
 
-#define CHECK_MAYBE_NOTHING(env, maybe, status)                                \
-  RETURN_STATUS_IF_FALSE((env), !((maybe).IsNothing()), (status))
+#define CHECK_MAYBE_NOTHING(env, maybe, status) RETURN_STATUS_IF_FALSE((env), !((maybe).IsNothing()), (status))
 
-#define CHECK_MAYBE_NOTHING_WITH_PREAMBLE(env, maybe, status)                  \
-  RETURN_STATUS_IF_FALSE_WITH_PREAMBLE((env), !((maybe).IsNothing()), (status))
+#define CHECK_MAYBE_NOTHING_WITH_PREAMBLE(env, maybe, status)                                                          \
+    RETURN_STATUS_IF_FALSE_WITH_PREAMBLE((env), !((maybe).IsNothing()), (status))
 
-#define CHECK_TO_NUMBER(env, context, result, src)                             \
-  CHECK_TO_TYPE((env), Number, (context), (result), (src), napi_number_expected)
+#define CHECK_TO_NUMBER(env, context, result, src)                                                                     \
+    CHECK_TO_TYPE((env), Number, (context), (result), (src), napi_number_expected)
 
-#define CHECK_NEW_FROM_UTF8_LEN(env, result, str, len)                         \
-  do {                                                                         \
-    static_assert(static_cast<int>(NAPI_AUTO_LENGTH) == -1,                    \
-                  "Casting NAPI_AUTO_LENGTH to int must result in -1");        \
-    RETURN_STATUS_IF_FALSE(                                                    \
-        (env), (len == NAPI_AUTO_LENGTH) || len <= INT_MAX, napi_invalid_arg); \
-    RETURN_STATUS_IF_FALSE((env), (str) != nullptr, napi_invalid_arg);         \
-    auto str_maybe = v8::String::NewFromUtf8((env)->isolate,                   \
-                                             (str),                            \
-                                             v8::NewStringType::kInternalized, \
-                                             static_cast<int>(len));           \
-    CHECK_MAYBE_EMPTY((env), str_maybe, napi_generic_failure);                 \
-    (result) = str_maybe.ToLocalChecked();                                     \
-  } while (0)
+#define CHECK_NEW_FROM_UTF8_LEN(env, result, str, len)                                                                 \
+    do {                                                                                                               \
+        static_assert(static_cast<int>(NAPI_AUTO_LENGTH) == -1, "Casting NAPI_AUTO_LENGTH to int must result in -1");  \
+        RETURN_STATUS_IF_FALSE((env), (len == NAPI_AUTO_LENGTH) || len <= INT_MAX, napi_invalid_arg);                  \
+        RETURN_STATUS_IF_FALSE((env), (str) != nullptr, napi_invalid_arg);                                             \
+        auto str_maybe = v8::String::NewFromUtf8((env)->isolate, (str), v8::NewStringType::kInternalized,              \
+                                                 static_cast<int>(len));                                               \
+        CHECK_MAYBE_EMPTY((env), str_maybe, napi_generic_failure);                                                     \
+        (result) = str_maybe.ToLocalChecked();                                                                         \
+    } while (0)
 
-#define CHECK_NEW_FROM_UTF8(env, result, str)                                  \
-  CHECK_NEW_FROM_UTF8_LEN((env), (result), (str), NAPI_AUTO_LENGTH)
+#define CHECK_NEW_FROM_UTF8(env, result, str) CHECK_NEW_FROM_UTF8_LEN((env), (result), (str), NAPI_AUTO_LENGTH)
 
-#define CREATE_TYPED_ARRAY(                                                    \
-    env, type, size_of_element, buffer, byte_offset, length, out)              \
-  do {                                                                         \
-    if ((size_of_element) > 1) {                                               \
-      THROW_RANGE_ERROR_IF_FALSE(                                              \
-          (env),                                                               \
-          (byte_offset) % (size_of_element) == 0,                              \
-          "ERR_NAPI_INVALID_TYPEDARRAY_ALIGNMENT",                             \
-          "start offset of " #type                                             \
-          " should be a multiple of " #size_of_element);                       \
-    }                                                                          \
-    THROW_RANGE_ERROR_IF_FALSE(                                                \
-        (env),                                                                 \
-        (length) * (size_of_element) + (byte_offset) <= buffer->ByteLength(),  \
-        "ERR_NAPI_INVALID_TYPEDARRAY_LENGTH",                                  \
-        "Invalid typed array length");                                         \
-    (out) = v8::type::New((buffer), (byte_offset), (length));                  \
-  } while (0)
+#define CREATE_TYPED_ARRAY(env, type, size_of_element, buffer, byte_offset, length, out)                               \
+    do {                                                                                                               \
+        if ((size_of_element) > 1) {                                                                                   \
+            THROW_RANGE_ERROR_IF_FALSE((env), (byte_offset) % (size_of_element) == 0,                                  \
+                                       "ERR_NAPI_INVALID_TYPEDARRAY_ALIGNMENT",                                        \
+                                       "start offset of " #type " should be a multiple of " #size_of_element);         \
+        }                                                                                                              \
+        THROW_RANGE_ERROR_IF_FALSE((env), (length) * (size_of_element) + (byte_offset) <= buffer->ByteLength(),        \
+                                   "ERR_NAPI_INVALID_TYPEDARRAY_LENGTH", "Invalid typed array length");                \
+        (out) = v8::type::New((buffer), (byte_offset), (length));                                                      \
+    } while (0)
 
-napi_status NAPI_CDECL napi_wrap(napi_env env,
-                                 napi_value js_object,
-                                 void* native_object,
-                                 node_api_basic_finalize basic_finalize_cb,
-                                 void* finalize_hint,
-                                 napi_ref* result) {
-  napi_finalize finalize_cb =
-      reinterpret_cast<napi_finalize>(basic_finalize_cb);
-  return v8impl::Wrap(
-      env, js_object, native_object, finalize_cb, finalize_hint, result);
+napi_status NAPI_CDECL napi_wrap(napi_env env, napi_value js_object, void *native_object,
+                                 node_api_basic_finalize basic_finalize_cb, void *finalize_hint, napi_ref *result) {
+    napi_finalize finalize_cb = reinterpret_cast<napi_finalize>(basic_finalize_cb);
+    return v8impl::Wrap(env, js_object, native_object, finalize_cb, finalize_hint, result);
 }
 
 
-napi_status NAPI_CDECL napi_unwrap(napi_env env,
-                                   napi_value obj,
-                                   void** result) {
-  return v8impl::Unwrap(env, obj, result, v8impl::KeepWrap);
+napi_status NAPI_CDECL napi_unwrap(napi_env env, napi_value obj, void **result) {
+    return v8impl::Unwrap(env, obj, result, v8impl::KeepWrap);
 }
 
 
-napi_status NAPI_CDECL napi_remove_wrap(napi_env env,
-                                        napi_value obj,
-                                        void** result) {
-  return v8impl::Unwrap(env, obj, result, v8impl::RemoveWrap);
+napi_status NAPI_CDECL napi_remove_wrap(napi_env env, napi_value obj, void **result) {
+    return v8impl::Unwrap(env, obj, result, v8impl::RemoveWrap);
 }
 
 
-napi_status NAPI_CDECL
-napi_create_external(napi_env env,
-                     void* data,
-                     node_api_basic_finalize basic_finalize_cb,
-                     void* finalize_hint,
-                     napi_value* result) {
-  napi_finalize finalize_cb =
-      reinterpret_cast<napi_finalize>(basic_finalize_cb);
-  NAPI_PREAMBLE(env);
-  CHECK_ARG(env, result);
+napi_status NAPI_CDECL napi_create_external(napi_env env, void *data, node_api_basic_finalize basic_finalize_cb,
+                                            void *finalize_hint, napi_value *result) {
+    napi_finalize finalize_cb = reinterpret_cast<napi_finalize>(basic_finalize_cb);
+    NAPI_PREAMBLE(env);
+    CHECK_ARG(env, result);
 
-  v8::Local<v8::External> external_value =
-      v8impl::ExternalWrapper::New(env, data);
+    v8::Local<v8::External> external_value = v8impl::ExternalWrapper::New(env, data);
 
-  if (finalize_cb) {
-    // The Reference object will delete itself after invoking the finalizer
-    // callback.
-    v8impl::ReferenceWithFinalizer::New(env,
-                                        external_value,
-                                        0,
-                                        v8impl::ReferenceOwnership::kRuntime,
-                                        finalize_cb,
-                                        data,
-                                        finalize_hint);
-  }
-
-  *result = v8impl::JsValueFromV8LocalValue(external_value);
-
-  return napi_clear_last_error(env);
-}
-
-
-napi_status NAPI_CDECL napi_type_tag_object(napi_env env,
-                                            napi_value object_or_external,
-                                            const napi_type_tag* type_tag) {
-  NAPI_PREAMBLE(env);
-  v8::Local<v8::Context> context = env->context();
-
-  CHECK_ARG(env, object_or_external);
-  v8::Local<v8::Value> val =
-      v8impl::V8LocalValueFromJsValue(object_or_external);
-  if (val->IsExternal()) {
-    v8impl::ExternalWrapper* wrapper =
-        v8impl::ExternalWrapper::From(val.As<v8::External>());
-    RETURN_STATUS_IF_FALSE_WITH_PREAMBLE(
-        env, wrapper->TypeTag(type_tag), napi_invalid_arg);
-    return GET_RETURN_STATUS(env);
-  }
-
-  v8::Local<v8::Object> obj;
-  CHECK_TO_OBJECT_WITH_PREAMBLE(env, context, obj, object_or_external);
-  CHECK_ARG_WITH_PREAMBLE(env, type_tag);
-
-  auto key = NAPI_PRIVATE_KEY(context, type_tag);
-  auto maybe_has = obj->HasPrivate(context, key);
-  CHECK_MAYBE_NOTHING_WITH_PREAMBLE(env, maybe_has, napi_generic_failure);
-  RETURN_STATUS_IF_FALSE_WITH_PREAMBLE(
-      env, !maybe_has.FromJust(), napi_invalid_arg);
-
-  auto tag = v8::BigInt::NewFromWords(
-      context, 0, 2, reinterpret_cast<const uint64_t*>(type_tag));
-  CHECK_MAYBE_EMPTY_WITH_PREAMBLE(env, tag, napi_generic_failure);
-
-  auto maybe_set = obj->SetPrivate(context, key, tag.ToLocalChecked());
-  CHECK_MAYBE_NOTHING_WITH_PREAMBLE(env, maybe_set, napi_generic_failure);
-  RETURN_STATUS_IF_FALSE_WITH_PREAMBLE(
-      env, maybe_set.FromJust(), napi_generic_failure);
-
-  return GET_RETURN_STATUS(env);
-}
-
-
-napi_status NAPI_CDECL napi_check_object_type_tag(napi_env env,
-                                                  napi_value object_or_external,
-                                                  const napi_type_tag* type_tag,
-                                                  bool* result) {
-  NAPI_PREAMBLE(env);
-  v8::Local<v8::Context> context = env->context();
-
-  CHECK_ARG(env, object_or_external);
-  v8::Local<v8::Value> obj_val =
-      v8impl::V8LocalValueFromJsValue(object_or_external);
-  if (obj_val->IsExternal()) {
-    v8impl::ExternalWrapper* wrapper =
-        v8impl::ExternalWrapper::From(obj_val.As<v8::External>());
-    *result = wrapper->CheckTypeTag(type_tag);
-    return GET_RETURN_STATUS(env);
-  }
-
-  v8::Local<v8::Object> obj;
-  CHECK_TO_OBJECT_WITH_PREAMBLE(env, context, obj, object_or_external);
-  CHECK_ARG_WITH_PREAMBLE(env, type_tag);
-  CHECK_ARG_WITH_PREAMBLE(env, result);
-
-  auto maybe_value =
-      obj->GetPrivate(context, NAPI_PRIVATE_KEY(context, type_tag));
-  CHECK_MAYBE_EMPTY_WITH_PREAMBLE(env, maybe_value, napi_generic_failure);
-  v8::Local<v8::Value> val = maybe_value.ToLocalChecked();
-
-  // We consider the type check to have failed unless we reach the line below
-  // where we set whether the type check succeeded or not based on the
-  // comparison of the two type tags.
-  *result = false;
-  if (val->IsBigInt()) {
-    int sign;
-    int size = 2;
-    napi_type_tag tag;
-    val.As<v8::BigInt>()->ToWordsArray(
-        &sign, &size, reinterpret_cast<uint64_t*>(&tag));
-    if (sign == 0) {
-      if (size == 2) {
-        *result =
-            (tag.lower == type_tag->lower && tag.upper == type_tag->upper);
-      } else if (size == 1) {
-        *result = (tag.lower == type_tag->lower && 0 == type_tag->upper);
-      } else if (size == 0) {
-        *result = (0 == type_tag->lower && 0 == type_tag->upper);
-      }
+    if (finalize_cb) {
+        // The Reference object will delete itself after invoking the finalizer
+        // callback.
+        v8impl::ReferenceWithFinalizer::New(env, external_value, 0, v8impl::ReferenceOwnership::kRuntime, finalize_cb,
+                                            data, finalize_hint);
     }
-  }
 
-  return GET_RETURN_STATUS(env);
+    *result = v8impl::JsValueFromV8LocalValue(external_value);
+
+    return napi_clear_last_error(env);
 }
 
 
-napi_status NAPI_CDECL napi_get_value_external(napi_env env,
-                                               napi_value value,
-                                               void** result) {
-  CHECK_ENV_NOT_IN_GC(env);
-  CHECK_ARG(env, value);
-  CHECK_ARG(env, result);
+napi_status NAPI_CDECL napi_type_tag_object(napi_env env, napi_value object_or_external,
+                                            const napi_type_tag *type_tag) {
+    NAPI_PREAMBLE(env);
+    v8::Local<v8::Context> context = env->context();
 
-  v8::Local<v8::Value> val = v8impl::V8LocalValueFromJsValue(value);
-  RETURN_STATUS_IF_FALSE(env, val->IsExternal(), napi_invalid_arg);
+    CHECK_ARG(env, object_or_external);
+    v8::Local<v8::Value> val = v8impl::V8LocalValueFromJsValue(object_or_external);
+    if (val->IsExternal()) {
+        v8impl::ExternalWrapper *wrapper = v8impl::ExternalWrapper::From(val.As<v8::External>());
+        RETURN_STATUS_IF_FALSE_WITH_PREAMBLE(env, wrapper->TypeTag(type_tag), napi_invalid_arg);
+        return GET_RETURN_STATUS(env);
+    }
 
-  v8::Local<v8::External> external_value = val.As<v8::External>();
-  *result = v8impl::ExternalWrapper::From(external_value)->Data();
+    v8::Local<v8::Object> obj;
+    CHECK_TO_OBJECT_WITH_PREAMBLE(env, context, obj, object_or_external);
+    CHECK_ARG_WITH_PREAMBLE(env, type_tag);
 
-  return napi_clear_last_error(env);
+    auto key = NAPI_PRIVATE_KEY(context, type_tag);
+    auto maybe_has = obj->HasPrivate(context, key);
+    CHECK_MAYBE_NOTHING_WITH_PREAMBLE(env, maybe_has, napi_generic_failure);
+    RETURN_STATUS_IF_FALSE_WITH_PREAMBLE(env, !maybe_has.FromJust(), napi_invalid_arg);
+
+    auto tag = v8::BigInt::NewFromWords(context, 0, 2, reinterpret_cast<const uint64_t *>(type_tag));
+    CHECK_MAYBE_EMPTY_WITH_PREAMBLE(env, tag, napi_generic_failure);
+
+    auto maybe_set = obj->SetPrivate(context, key, tag.ToLocalChecked());
+    CHECK_MAYBE_NOTHING_WITH_PREAMBLE(env, maybe_set, napi_generic_failure);
+    RETURN_STATUS_IF_FALSE_WITH_PREAMBLE(env, maybe_set.FromJust(), napi_generic_failure);
+
+    return GET_RETURN_STATUS(env);
 }
 
 
-napi_status NAPI_CDECL
-napi_add_finalizer(napi_env env,
-                   napi_value js_object,
-                   void* finalize_data,
-                   node_api_basic_finalize basic_finalize_cb,
-                   void* finalize_hint,
-                   napi_ref* result) {
-  // Omit NAPI_PREAMBLE and GET_RETURN_STATUS because V8 calls here cannot throw
-  // JS exceptions.
-  napi_finalize finalize_cb =
-      reinterpret_cast<napi_finalize>(basic_finalize_cb);
-  CHECK_ENV_NOT_IN_GC(env);
-  CHECK_ARG(env, js_object);
-  CHECK_ARG(env, finalize_cb);
+napi_status NAPI_CDECL napi_check_object_type_tag(napi_env env, napi_value object_or_external,
+                                                  const napi_type_tag *type_tag, bool *result) {
+    NAPI_PREAMBLE(env);
+    v8::Local<v8::Context> context = env->context();
 
-  v8::Local<v8::Value> v8_value = v8impl::V8LocalValueFromJsValue(js_object);
-  RETURN_STATUS_IF_FALSE(env, v8_value->IsObject(), napi_invalid_arg);
+    CHECK_ARG(env, object_or_external);
+    v8::Local<v8::Value> obj_val = v8impl::V8LocalValueFromJsValue(object_or_external);
+    if (obj_val->IsExternal()) {
+        v8impl::ExternalWrapper *wrapper = v8impl::ExternalWrapper::From(obj_val.As<v8::External>());
+        *result = wrapper->CheckTypeTag(type_tag);
+        return GET_RETURN_STATUS(env);
+    }
 
-  // Create a self-deleting reference if the optional out-param result is not
-  // set.
-  v8impl::ReferenceOwnership ownership =
-      result == nullptr ? v8impl::ReferenceOwnership::kRuntime
-                        : v8impl::ReferenceOwnership::kUserland;
-  v8impl::Reference* reference = v8impl::ReferenceWithFinalizer::New(
-      env, v8_value, 0, ownership, finalize_cb, finalize_data, finalize_hint);
+    v8::Local<v8::Object> obj;
+    CHECK_TO_OBJECT_WITH_PREAMBLE(env, context, obj, object_or_external);
+    CHECK_ARG_WITH_PREAMBLE(env, type_tag);
+    CHECK_ARG_WITH_PREAMBLE(env, result);
 
-  if (result != nullptr) {
-    *result = reinterpret_cast<napi_ref>(reference);
-  }
-  return napi_clear_last_error(env);
+    auto maybe_value = obj->GetPrivate(context, NAPI_PRIVATE_KEY(context, type_tag));
+    CHECK_MAYBE_EMPTY_WITH_PREAMBLE(env, maybe_value, napi_generic_failure);
+    v8::Local<v8::Value> val = maybe_value.ToLocalChecked();
+
+    // We consider the type check to have failed unless we reach the line below
+    // where we set whether the type check succeeded or not based on the
+    // comparison of the two type tags.
+    *result = false;
+    if (val->IsBigInt()) {
+        int sign;
+        int size = 2;
+        napi_type_tag tag;
+        val.As<v8::BigInt>()->ToWordsArray(&sign, &size, reinterpret_cast<uint64_t *>(&tag));
+        if (sign == 0) {
+            if (size == 2) {
+                *result = (tag.lower == type_tag->lower && tag.upper == type_tag->upper);
+            } else if (size == 1) {
+                *result = (tag.lower == type_tag->lower && 0 == type_tag->upper);
+            } else if (size == 0) {
+                *result = (0 == type_tag->lower && 0 == type_tag->upper);
+            }
+        }
+    }
+
+    return GET_RETURN_STATUS(env);
+}
+
+
+napi_status NAPI_CDECL napi_get_value_external(napi_env env, napi_value value, void **result) {
+    CHECK_ENV_NOT_IN_GC(env);
+    CHECK_ARG(env, value);
+    CHECK_ARG(env, result);
+
+    v8::Local<v8::Value> val = v8impl::V8LocalValueFromJsValue(value);
+    RETURN_STATUS_IF_FALSE(env, val->IsExternal(), napi_invalid_arg);
+
+    v8::Local<v8::External> external_value = val.As<v8::External>();
+    *result = v8impl::ExternalWrapper::From(external_value)->Data();
+
+    return napi_clear_last_error(env);
+}
+
+
+napi_status NAPI_CDECL napi_add_finalizer(napi_env env, napi_value js_object, void *finalize_data,
+                                          node_api_basic_finalize basic_finalize_cb, void *finalize_hint,
+                                          napi_ref *result) {
+    // Omit NAPI_PREAMBLE and GET_RETURN_STATUS because V8 calls here cannot throw
+    // JS exceptions.
+    napi_finalize finalize_cb = reinterpret_cast<napi_finalize>(basic_finalize_cb);
+    CHECK_ENV_NOT_IN_GC(env);
+    CHECK_ARG(env, js_object);
+    CHECK_ARG(env, finalize_cb);
+
+    v8::Local<v8::Value> v8_value = v8impl::V8LocalValueFromJsValue(js_object);
+    RETURN_STATUS_IF_FALSE(env, v8_value->IsObject(), napi_invalid_arg);
+
+    // Create a self-deleting reference if the optional out-param result is not
+    // set.
+    v8impl::ReferenceOwnership ownership =
+            result == nullptr ? v8impl::ReferenceOwnership::kRuntime : v8impl::ReferenceOwnership::kUserland;
+    v8impl::Reference *reference =
+            v8impl::ReferenceWithFinalizer::New(env, v8_value, 0, ownership, finalize_cb, finalize_data, finalize_hint);
+
+    if (result != nullptr) {
+        *result = reinterpret_cast<napi_ref>(reference);
+    }
+    return napi_clear_last_error(env);
 }
 
 
 // node_api_post_finalizer is exposed in node_api.h only for newer NAPI
 // versions; force C linkage so consumers see the unmangled symbol.
-extern "C" NAPI_EXTERN napi_status NAPI_CDECL
-node_api_post_finalizer(node_api_basic_env basic_env,
-                        napi_finalize finalize_cb,
-                        void* finalize_data,
-                        void* finalize_hint);
+extern "C" NAPI_EXTERN napi_status NAPI_CDECL node_api_post_finalizer(node_api_basic_env basic_env,
+                                                                      napi_finalize finalize_cb, void *finalize_data,
+                                                                      void *finalize_hint);
 
-napi_status NAPI_CDECL node_api_post_finalizer(node_api_basic_env basic_env,
-                                               napi_finalize finalize_cb,
-                                               void* finalize_data,
-                                               void* finalize_hint) {
-  napi_env env = const_cast<napi_env>(basic_env);
-  CHECK_ENV(env);
-  env->EnqueueFinalizer(v8impl::TrackedFinalizer::New(
-      env, finalize_cb, finalize_data, finalize_hint));
-  return napi_clear_last_error(env);
+napi_status NAPI_CDECL node_api_post_finalizer(node_api_basic_env basic_env, napi_finalize finalize_cb,
+                                               void *finalize_data, void *finalize_hint) {
+    napi_env env = const_cast<napi_env>(basic_env);
+    CHECK_ENV(env);
+    env->EnqueueFinalizer(v8impl::TrackedFinalizer::New(env, finalize_cb, finalize_data, finalize_hint));
+    return napi_clear_last_error(env);
 }
-
