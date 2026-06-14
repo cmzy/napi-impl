@@ -10,6 +10,7 @@ NODE_GYP_MODULE_NAME convention used in entry_point.h).
 from __future__ import annotations
 
 import argparse
+import os
 import shutil
 import subprocess
 import sys
@@ -62,6 +63,35 @@ def build_one(feature_dir: Path, libdir: Path, dry_run: bool,
             "-target", "arm64-apple-ios13.0",
             "-miphoneos-version-min=13.0",
         ]
+    elif "android" in str(libdir):
+        ndk = os.environ.get("ANDROID_NDK_ROOT") or os.environ.get(
+            "ANDROID_NDK_HOME")
+        if not ndk:
+            for candidate in (
+                Path.home() / "Android/Sdk/ndk",
+                Path("/opt/android-ndk"),
+            ):
+                if candidate.is_dir():
+                    versions = sorted(p for p in candidate.iterdir()
+                                       if p.is_dir())
+                    if versions:
+                        ndk = str(versions[-1])
+                        break
+        if not ndk:
+            print("[fail-build] ANDROID_NDK_ROOT not set", file=sys.stderr)
+            return False
+        host = "linux-x86_64" if sys.platform.startswith("linux") else "darwin-x86_64"
+        tc = Path(ndk) / "toolchains/llvm/prebuilt" / host / "bin"
+        api = "21"
+        if "x86_64" in str(libdir):
+            cxx = str(tc / f"x86_64-linux-android{api}-clang")
+            if is_cpp:
+                cxx = str(tc / f"x86_64-linux-android{api}-clang++")
+        else:
+            cxx = str(tc / f"aarch64-linux-android{api}-clang")
+            if is_cpp:
+                cxx = str(tc / f"aarch64-linux-android{api}-clang++")
+        extra_flags = ["-fPIC"]
 
     lib_link_name = "napi_v8" if (libdir / "libnapi_v8.so").exists() else "NapiV8"
     cmd = [
