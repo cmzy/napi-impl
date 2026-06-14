@@ -78,6 +78,22 @@ def main():
                        check=True, capture_output=True)
         subprocess.run([adb, "shell", "chmod", "755",
                         f"{android_dev}/runner"], check=True)
+        # Push libc++_shared.so so C++ bindings can dlopen.
+        ndk = os.environ.get("ANDROID_NDK_ROOT") or os.environ.get(
+            "ANDROID_NDK_HOME")
+        if not ndk:
+            ndk_dir = Path.home() / "Android/Sdk/ndk"
+            if ndk_dir.is_dir():
+                versions = sorted(p for p in ndk_dir.iterdir() if p.is_dir())
+                if versions: ndk = str(versions[-1])
+        if ndk:
+            arch_dir = "x86_64-linux-android" if args.arch == "x86_64" else (
+                "aarch64-linux-android")
+            cxxshared = (Path(ndk) / "toolchains/llvm/prebuilt/linux-x86_64"
+                         / "sysroot/usr/lib" / arch_dir / "libc++_shared.so")
+            if cxxshared.exists():
+                subprocess.run([adb, "push", str(cxxshared), android_dev],
+                               check=True, capture_output=True)
 
     passed, failed, skipped = [], [], []
 
