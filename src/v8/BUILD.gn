@@ -12,8 +12,12 @@ shared_library("napi_v8") {
     "//napi/src/common",
     "//napi/src/v8/inspector:inspector",
     "//:v8_monolith",
-    "//third_party/rust/temporal_capi:temporal_capi",
   ]
+  if (is_apple) {
+    # macOS / iOS link surfaces temporal_capi symbols externally; Linux
+    # already has them bundled inside v8_monolith.a.
+    deps += [ "//third_party/rust/temporal_capi:temporal_capi" ]
+  }
 
   if (is_apple) {
     output_name = "NapiV8"
