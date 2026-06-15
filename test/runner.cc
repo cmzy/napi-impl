@@ -757,7 +757,11 @@ int main(int argc, char** argv) {
     if (std::strncmp(argv[i], "--inspect=", 10) == 0) {
       // Idle 2s.  Cheap and predictable for tests; production embedders
       // would loop until the client disconnects.
+#if defined(_WIN32)
+      ::Sleep(2000);
+#else
       ::usleep(2 * 1000 * 1000);
+#endif
       break;
     }
   }
