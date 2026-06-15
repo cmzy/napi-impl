@@ -1,25 +1,32 @@
 #!/usr/bin/env python3
-"""Build a CMake-consumable napi_v8 package for Linux/Windows.
+"""Build a CMake-consumable napi_v8 package for one platform/arch.
 
 Layout produced:
   out/dist/napi-v8-<platform>-<arch>/
   ├── include/
   │   ├── napi/...      (synced upstream Node-API headers)
-  │   └── napi_v8/...   (our embedding + inspector)
+  │   └── napi_v8/...   (our embedding + inspector + sab)
   ├── lib/
-  │   ├── libnapi_v8.so  (Linux)
+  │   ├── libnapi_v8.so   (Linux / Android)
+  │   ├── libNapiV8.dylib (macOS / iOS)
   │   └── napi_v8.dll + napi_v8.lib (Windows)
-  └── cmake/
-      ├── napi_v8-config.cmake
-      └── napi_v8-config-version.cmake
+  ├── cmake/
+  │   ├── napi_v8-config.cmake
+  │   └── napi_v8-config-version.cmake
+  └── BUILD_INFO.md
 
 Consumers: `find_package(napi_v8 REQUIRED CONFIG)` →
            `target_link_libraries(myapp PRIVATE napi_v8::napi_v8)`.
+
+Bundled artifact written next to the directory:
+  - .zip on Windows
+  - .tar.gz everywhere else
 """
 from __future__ import annotations
 
 import argparse
 import shutil
+import subprocess
 import sys
 import tarfile
 import zipfile
@@ -39,8 +46,8 @@ get_filename_component(_napi_v8_root "${{CMAKE_CURRENT_LIST_DIR}}/.." ABSOLUTE)
 add_library(napi_v8::napi_v8 SHARED IMPORTED)
 set_target_properties(napi_v8::napi_v8 PROPERTIES
   IMPORTED_LOCATION "${{_napi_v8_root}}/lib/{lib_runtime}"
-  INTERFACE_INCLUDE_DIRECTORIES "${{_napi_v8_root}}/include"
-{import_lib})
+  INTERFACE_INCLUDE_DIRECTORIES "${{_napi_v8_root}}/include"{import_lib}
+)
 
 set(napi_v8_VERSION {version})
 set(napi_v8_INCLUDE_DIR "${{_napi_v8_root}}/include")
@@ -60,21 +67,34 @@ else()
 endif()
 """
 
+# Per-platform runtime / import-lib file naming.
+PLATFORM_LIB = {
+    "linux":   ("libnapi_v8.so",   None),
+    "android": ("libnapi_v8.so",   None),
+    "mac":     ("libNapiV8.dylib", None),
+    "ios":     ("libNapiV8.dylib", None),
+    "ios_sim": ("libNapiV8.dylib", None),
+    "windows": ("napi_v8.dll",     "napi_v8.lib"),
+}
+
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--platform", required=True,
-                    choices=["linux", "windows"])
-    ap.add_argument("--arch", default="x64")
+                    choices=sorted(PLATFORM_LIB.keys()))
+    ap.add_argument("--arch", required=True)
     ap.add_argument("--config", default="release")
     ap.add_argument("--version", default="1.0.0")
     args = ap.parse_args()
+
+    runtime, import_lib = PLATFORM_LIB[args.platform]
 
     src_build = ROOT / "out" / "build" / f"v8-{args.platform}-{args.arch}-{args.config}"
     if not src_build.is_dir():
         sys.exit(f"[error] {src_build} missing; run build.py first")
 
-    pkg = DIST / f"napi-v8-{args.platform}-{args.arch}"
+    pkg_name = f"napi-v8-{args.platform}-{args.arch}"
+    pkg = DIST / pkg_name
     if pkg.exists():
         shutil.rmtree(pkg)
     (pkg / "include").mkdir(parents=True)
@@ -86,18 +106,14 @@ def main():
         shutil.copytree(src, pkg / "include" / src.name, dirs_exist_ok=True)
 
     # Libraries
+    shutil.copy2(src_build / runtime, pkg / "lib" / runtime)
     import_lib_prop = ""
-    if args.platform == "linux":
-        runtime = "libnapi_v8.so"
-        shutil.copy2(src_build / runtime, pkg / "lib" / runtime)
-    else:  # windows
-        runtime = "napi_v8.dll"
-        import_lib = "napi_v8.lib"
-        shutil.copy2(src_build / runtime, pkg / "lib" / runtime)
-        if (src_build / import_lib).exists():
-            shutil.copy2(src_build / import_lib, pkg / "lib" / import_lib)
+    if import_lib:
+        impsrc = src_build / import_lib
+        if impsrc.exists():
+            shutil.copy2(impsrc, pkg / "lib" / import_lib)
         import_lib_prop = (
-            f'  IMPORTED_IMPLIB "${{_napi_v8_root}}/lib/{import_lib}"\n)')
+            f'\n  IMPORTED_IMPLIB "${{_napi_v8_root}}/lib/{import_lib}"')
 
     (pkg / "cmake" / "napi_v8-config.cmake").write_text(
         CONFIG_TMPL.format(lib_runtime=runtime,
@@ -106,32 +122,30 @@ def main():
     (pkg / "cmake" / "napi_v8-config-version.cmake").write_text(
         VERSION_TMPL.format(version=args.version))
 
-    # BUILD_INFO.md at package root.
-    import subprocess as _sp
-    _sp.check_call([
+    subprocess.check_call([
         sys.executable, str(ROOT / "scripts" / "gen_build_info.py"),
         "--platforms", f"{args.platform}/{args.arch}",
         "--version", args.version,
         "--out", str(pkg / "BUILD_INFO.md")])
 
-    # Bundle tarball / zip
-    if args.platform == "linux":
-        out_tar = DIST / f"napi-v8-{args.platform}-{args.arch}.tar.gz"
-        if out_tar.exists(): out_tar.unlink()
-        with tarfile.open(out_tar, "w:gz") as tf:
-            tf.add(pkg, arcname=pkg.name)
-        artifact = out_tar
-    else:
-        out_zip = DIST / f"napi-v8-{args.platform}-{args.arch}.zip"
-        if out_zip.exists(): out_zip.unlink()
-        with zipfile.ZipFile(out_zip, "w", zipfile.ZIP_DEFLATED) as zf:
+    # Bundle
+    if args.platform == "windows":
+        out_arc = DIST / f"{pkg_name}.zip"
+        if out_arc.exists():
+            out_arc.unlink()
+        with zipfile.ZipFile(out_arc, "w", zipfile.ZIP_DEFLATED) as zf:
             for p in pkg.rglob("*"):
                 if p.is_file():
                     zf.write(p, p.relative_to(pkg.parent))
-        artifact = out_zip
+    else:
+        out_arc = DIST / f"{pkg_name}.tar.gz"
+        if out_arc.exists():
+            out_arc.unlink()
+        with tarfile.open(out_arc, "w:gz") as tf:
+            tf.add(pkg, arcname=pkg.name)
 
-    print(f"[done] {artifact}")
-    print(f"  size: {artifact.stat().st_size / 1024 / 1024:.1f} MB")
+    print(f"[done] {out_arc}")
+    print(f"  size: {out_arc.stat().st_size / 1024 / 1024:.1f} MB")
 
 
 if __name__ == "__main__":
