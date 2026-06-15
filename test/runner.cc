@@ -12,6 +12,20 @@
 //   4. Read <test.js> and run via napi_run_script
 //   5. Exit 0 on success, 1 on uncaught exception or assertion failure
 
+#if defined(_WIN32)
+#include <windows.h>
+// Windows shims: LoadLibrary/GetProcAddress replace POSIX dl*; subprocess
+// spawn is stubbed out (the few tests that use it just fail on Windows).
+static void* dlopen(const char* path, int /*flags*/) {
+    return (void*)LoadLibraryA(path);
+}
+static void* dlsym(void* h, const char* name) {
+    return (void*)GetProcAddress((HMODULE)h, name);
+}
+static const char* dlerror() { return "LoadLibrary failed"; }
+#define RTLD_NOW 0
+#define RTLD_LOCAL 0
+#else
 #include <dlfcn.h>
 #include <fcntl.h>
 #include <spawn.h>
@@ -24,6 +38,7 @@
 extern "C" char** environ;
 #define NAPI_RUNNER_ENVIRON environ
 #endif
+#endif  // _WIN32
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -115,6 +130,7 @@ struct RunnerCtx {
   std::string module_name;
 } g_ctx;
 
+#if !defined(_WIN32)
 static std::string DrainFd(int fd) {
   std::string out;
   char buf[4096];
@@ -122,11 +138,25 @@ static std::string DrainFd(int fd) {
   while ((n = ::read(fd, buf, sizeof(buf))) > 0) out.append(buf, n);
   return out;
 }
+#endif
 
 // JS-callable: __spawnSync(execPath, argvArray) -> { status, stdout, stderr }.
 // Spawns a subprocess running our runner with the same (binding, module)
 // substituting `argv[0]` as the new test.js; remaining args become extra
 // process.argv entries.
+#if defined(_WIN32)
+// Windows: no subprocess support yet. Tests that depend on this (a handful
+// of finalizer / env-cleanup checks) will see status=-1 and fail; the rest
+// pass.
+static napi_value JsSpawnSync(napi_env env, napi_callback_info /*info*/) {
+    napi_value result;
+    napi_create_object(env, &result);
+    napi_value status_v;
+    napi_create_int32(env, -1, &status_v);
+    napi_set_named_property(env, result, "status", status_v);
+    return result;
+}
+#else
 static napi_value JsSpawnSync(napi_env env, napi_callback_info info) {
   size_t argc = 2;
   napi_value argv[2];
@@ -219,6 +249,7 @@ static napi_value JsSpawnSync(napi_env env, napi_callback_info info) {
   napi_set_named_property(env, result, "signal", signal_v);
   return result;
 }
+#endif  // !_WIN32
 
 static napi_value JsConsoleError(napi_env env, napi_callback_info info) {
   size_t argc = 8;
