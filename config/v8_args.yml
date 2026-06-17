@@ -30,11 +30,14 @@ common:
   symbol_level: 0
   v8_enable_i18n_support: false   # trim binary size; opt in if needed
   use_siso: false                 # M1 uses plain ninja, not Siso
-  # B1: ThinLTO + 更激进死代码消除，进一步缩小 .text 并提速（钉版 LLVM clang+lld 兼容）。
-  # is_official_build 要求 is_debug=false：release 满足；debug 由 build.py 关闭它。
-  # standalone 无 PGO profile，chrome_pgo_phase=0 避免 official build 索要 profile。
-  is_official_build: true
-  chrome_pgo_phase: 0
+  # 不用 is_official_build（官方 V8 embedding 路径）：官方编 v8_monolith 走标准 release、
+  # 不开 official build（见 v8.dev/docs/embed）。is_official_build 是 chromium *app* 的发布
+  # 配置，编「被宿主 dlopen 的独立 .so」时其 app 级特性会炸（v0.3.0 release 实测）：
+  #   - mac/ios：native 构建里 host 工具 torque 被 target 的 whole-program-vtables 污染，
+  #     ld64.lld 报 vtable undefined；
+  #   - android：allocator-shim(--wrap=malloc) 接管全进程 malloc，test 二进制缺 __wrap_*。
+  # 减包靠 A1(symbol_level=0) 即可，已省 ~84%(175M→~27M)；official build 增量仅 ~2-4M、
+  # 不值这条官方没走过的路。同版本 V8 14.2.234 + 标准 release 在 v0.2.2 已全平台成功。
   # V8 14.x requires enable_rust=true (temporal_capi); accept the toolchain cost.
 
 platforms:

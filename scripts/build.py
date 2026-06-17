@@ -111,11 +111,9 @@ def compose_args(platform: str, arch: str, config: str,
         args[k.strip()] = _parse_gn_value(v.strip())
 
     if config == "debug":
-        # release 减包默认（symbol_level=0、is_official_build=true）在 config/v8_args.yml。
-        # debug 在此覆盖回去：is_official_build 与 is_debug=true 互斥 → 关闭；并恢复完整符号。
-        # 直接赋值（非 setdefault），因 common 已为这两项设了 release 默认值。
+        # common 的 symbol_level=0 是 release 减包默认(A1)；debug 覆盖回完整符号。
+        # 直接赋值(非 setdefault)，因 common 已把 symbol_level 设为 release 默认 0。
         args["is_debug"] = True
-        args["is_official_build"] = False
         args["symbol_level"] = 2
     elif config == "release":
         args["is_debug"] = False
