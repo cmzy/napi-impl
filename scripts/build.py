@@ -62,9 +62,11 @@ def _parse_gn_value(s: str):
 
 
 # Constraints: when key=value matches, force the listed peers.
+# 注：pointer compression 不在此 bundle——它与 jitless 正交（jitless 关 JIT，pointer
+# compression 只改堆内指针布局），由各平台自选（移动端开启以省堆内存）。sandbox 仍强制
+# 关闭：jitless 平台同样走跨 C ABI 的 user-malloc backing store，sandbox 会限制它。
 JITLESS_BUNDLE = {
     "v8_enable_webassembly": False,
-    "v8_enable_pointer_compression": False,
     "v8_enable_sandbox": False,
     "v8_enable_maglev": False,
     "v8_enable_turbofan": False,
@@ -109,8 +111,12 @@ def compose_args(platform: str, arch: str, config: str,
         args[k.strip()] = _parse_gn_value(v.strip())
 
     if config == "debug":
+        # release 减包默认（symbol_level=0、is_official_build=true）在 config/v8_args.yml。
+        # debug 在此覆盖回去：is_official_build 与 is_debug=true 互斥 → 关闭；并恢复完整符号。
+        # 直接赋值（非 setdefault），因 common 已为这两项设了 release 默认值。
         args["is_debug"] = True
-        args.setdefault("symbol_level", 2)
+        args["is_official_build"] = False
+        args["symbol_level"] = 2
     elif config == "release":
         args["is_debug"] = False
 

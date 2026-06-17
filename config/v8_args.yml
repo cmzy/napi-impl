@@ -24,9 +24,17 @@ common:
   # libc++ references; disable clang modules to fall back to plain includes.
   use_libcxx_modules: false
   treat_warnings_as_errors: false
-  symbol_level: 1
+  # A1: release 默认不分发 DWARF。桌面 .so 中 ~140M(80%) 是 .debug_* 段，去掉后
+  # 从 ~175M 降到 ~27M（与已 strip 的 Android 同级），零功能/性能损失。
+  # debug 配置由 scripts/build.py 覆盖回 symbol_level=2。
+  symbol_level: 0
   v8_enable_i18n_support: false   # trim binary size; opt in if needed
   use_siso: false                 # M1 uses plain ninja, not Siso
+  # B1: ThinLTO + 更激进死代码消除，进一步缩小 .text 并提速（钉版 LLVM clang+lld 兼容）。
+  # is_official_build 要求 is_debug=false：release 满足；debug 由 build.py 关闭它。
+  # standalone 无 PGO profile，chrome_pgo_phase=0 避免 official build 索要 profile。
+  is_official_build: true
+  chrome_pgo_phase: 0
   # V8 14.x requires enable_rust=true (temporal_capi); accept the toolchain cost.
 
 platforms:
@@ -41,6 +49,8 @@ platforms:
     target_cpu: x64
     mac_deployment_target: "11.0"
 
+  # iOS 同移动端开启指针压缩（说明见 android 段）。jitless 与 pointer compression 正交，
+  # 二者可共存；build.py 的 JITLESS_BUNDLE 已不再强制关 pointer compression。
   ios_arm64:
     target_os: ios
     target_cpu: arm64
@@ -48,6 +58,7 @@ platforms:
     ios_deployment_target: "13.0"
     ios_enable_code_signing: false
     v8_jitless: true
+    v8_enable_pointer_compression: true
 
   ios_sim_arm64:
     target_os: ios
@@ -55,6 +66,7 @@ platforms:
     target_environment: simulator
     ios_deployment_target: "13.0"
     v8_jitless: true
+    v8_enable_pointer_compression: true
 
   ios_sim_x86_64:
     target_os: ios
@@ -62,16 +74,24 @@ platforms:
     target_environment: simulator
     ios_deployment_target: "13.0"
     v8_jitless: true
+    v8_enable_pointer_compression: true
 
+  # 移动端开启指针压缩：堆内对象指针 8B->4B，V8 堆内存通常省 ~30-40%（内存敏感平台）。
+  # sandbox 仍关（见 common）：external ArrayBuffer/String 仍可指向跨 C ABI 的 user-malloc
+  # 内存——pointer compression 本身不限制 external backing store，那是 sandbox 的约束。
+  # 代价：每 isolate 堆上限 ~4GB（移动端 JS 堆远低于此，无碍）。⚠️ 需跑一致性套件验证
+  # external/SAB 路径。
   android_arm64:
     target_os: android
     target_cpu: arm64
     android64_ndk_api_level: 21
+    v8_enable_pointer_compression: true
 
   android_x86_64:
     target_os: android
     target_cpu: x64
     android64_ndk_api_level: 21
+    v8_enable_pointer_compression: true
 
   linux_x64:
     target_os: linux
