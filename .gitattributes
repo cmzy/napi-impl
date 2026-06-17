@@ -1,0 +1,4 @@
+# Lock patch files to LF endings cross-platform. Windows checkout with
+# core.autocrlf=true otherwise rewrites them to CRLF, which `git apply`
+# rejects as "corrupt patch".
+*.patch text eol=lf
