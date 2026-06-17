@@ -35,7 +35,7 @@ def git_sha() -> str:
 
 def read_text(p: Path, default: str = "") -> str:
     try:
-        return p.read_text().strip()
+        return p.read_text(encoding="utf-8").strip()
     except FileNotFoundError:
         return default
 

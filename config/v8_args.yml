@@ -93,17 +93,23 @@ platforms:
   # 内存——pointer compression 本身不限制 external backing store，那是 sandbox 的约束。
   # 代价：每 isolate 堆上限 ~4GB（移动端 JS 堆远低于此，无碍）。⚠️ 需跑一致性套件验证
   # external/SAB 路径。
+  # Android: pointer compression 默认级联出 v8_enable_partition_alloc=true，会注入
+  # `-Wl,-wrap,malloc/vasprintf/...`，但 V8 standalone 不带 //base:allocator shim 实现，
+  # test exe 链接挂 `undefined symbol: __wrap_*`（v0.3.0-dev{1,3} Android 失败原因）。
+  # 显式关 partition_alloc：V8 改用 Bionic libc malloc，不影响 pointer compression。
   android_arm64:
     target_os: android
     target_cpu: arm64
     android64_ndk_api_level: 21
     v8_enable_pointer_compression: true
+    v8_enable_partition_alloc: false
 
   android_x86_64:
     target_os: android
     target_cpu: x64
     android64_ndk_api_level: 21
     v8_enable_pointer_compression: true
+    v8_enable_partition_alloc: false
 
   linux_x64:
     target_os: linux
