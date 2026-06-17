@@ -96,7 +96,7 @@ def main():
         lines.append("")
 
     args.out.parent.mkdir(parents=True, exist_ok=True)
-    args.out.write_text("\n".join(lines))
+    args.out.write_text("\n".join(lines), encoding="utf-8")
     print(f"[ok] wrote {args.out}")
 
 
