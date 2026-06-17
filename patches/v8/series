@@ -1,2 +1,3 @@
 # patches applied in order by scripts/setup.py
 # format: one filename per line, # for comments
+0001-build-add-napi-disable-whole-program-vtables-knob.patch

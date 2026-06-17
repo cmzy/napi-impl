@@ -1,0 +1,48 @@
+Subject: [build] add napi_v8_disable_whole_program_vtables knob
+
+V8 standalone + ThinLTO + -fwhole-program-vtables drops vtables for some
+classes (torque parser AST nodes, SimpleStringResource<T>) while keeping
+their typeinfo, causing `undefined symbol: vtable for ...` at link time on
+macOS/iOS, and similar fallout via PartitionAlloc wrap when paired with
+is_official_build=true. Upstream report (v8-users 2024 thread "V8
+optimized build fails on linking mksnapshot unless thin lto is disabled")
+has no fix.
+
+Introduce a build arg defaulting to false (no behavior change for
+upstream) so napi-impl can flip it on to keep use_thin_lto=true for size
+while skipping the whole-program-vtables sub-optimization.
+
+---
+ build/config/compiler/BUILD.gn | 13 ++++++++++++-
+ 1 file changed, 12 insertions(+), 1 deletion(-)
+
+diff --git a/build/config/compiler/BUILD.gn b/build/config/compiler/BUILD.gn
+--- a/build/config/compiler/BUILD.gn
++++ b/build/config/compiler/BUILD.gn
+@@ -203,6 +203,16 @@ declare_args() {
+   is_wexit_time_destructors_default = true
+ }
+
++declare_args() {
++  # napi-impl: skip `-fwhole-program-vtables` even when use_thin_lto=true.
++  # ThinLTO + whole-program-vtables in V8 standalone drops vtables for some
++  # classes (torque AST nodes, SimpleStringResource<T>) while preserving
++  # typeinfo, causing "undefined symbol: vtable for ..." at link time.
++  # See v8-users 2024 thread
++  # "V8 optimized build fails on linking mksnapshot unless thin lto is disabled".
++  napi_v8_disable_whole_program_vtables = false
++}
++
+ declare_args() {
+   # Set to true to use icf, Identical Code Folding.
+   use_icf = (is_posix || is_fuchsia) && !is_debug && !using_sanitizer &&
+@@ -923,7 +933,8 @@ config("compiler") {
+
+     # TODO(crbug.com/40182783): investigate why this isn't effective on
+     # arm32.
+-    if (!is_android || current_cpu == "arm64") {
++    if ((!is_android || current_cpu == "arm64") &&
++        !napi_v8_disable_whole_program_vtables) {
+       cflags += [ "-fwhole-program-vtables" ]
+
+       if (toolchain_supports_rust_thin_lto) {

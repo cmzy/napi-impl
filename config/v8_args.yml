@@ -30,6 +30,15 @@ common:
   symbol_level: 0
   v8_enable_i18n_support: false   # trim binary size; opt in if needed
   use_siso: false                 # M1 uses plain ninja, not Siso
+  # B2: 在 9b918ab（去掉 is_official_build）基础上单独开 ThinLTO 多省 ~10-15% .text。
+  # use_thin_lto 仍会触发 V8 BUILD.gn 注入 -fwhole-program-vtables —— 正是 v0.3.0 mac/ios
+  # 链接挂的根因；patches/v8/0001 加了 napi_v8_disable_whole_program_vtables 开关绕开。
+  # 本地实测 mac x64 libNapiV8.dylib=39M（含 ThinLTO + patch + symbol_level=0）。
+  use_thin_lto: true
+  napi_v8_disable_whole_program_vtables: true
+  # external code space 默认级联自移动端 pointer_compression；sandbox=false 下无收益，
+  # 显式关掉，避免引入不熟的 code 分配路径。
+  v8_enable_external_code_space: false
   # 不用 is_official_build（官方 V8 embedding 路径）：官方编 v8_monolith 走标准 release、
   # 不开 official build（见 v8.dev/docs/embed）。is_official_build 是 chromium *app* 的发布
   # 配置，编「被宿主 dlopen 的独立 .so」时其 app 级特性会炸（v0.3.0 release 实测）：

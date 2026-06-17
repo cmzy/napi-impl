@@ -38,7 +38,7 @@ DEPOT_TOOLS = THIRD_PARTY / "depot_tools"
 def _load_yaml(path: Path) -> dict:
     if not path.exists():
         return {}
-    return yaml.safe_load(path.read_text()) or {}
+    return yaml.safe_load(path.read_text(encoding="utf-8")) or {}
 
 
 def _deep_merge(dst: dict, src: dict) -> dict:
