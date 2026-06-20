@@ -63,7 +63,7 @@ def _parse_gn_value(s: str):
 
 # Constraints: when key=value matches, force the listed peers.
 # 注：pointer compression 不在此 bundle——它与 jitless 正交（jitless 关 JIT，pointer
-# compression 只改堆内指针布局），由各平台自选（移动端开启以省堆内存）。sandbox 仍强制
+# compression 只改堆内指针布局），现已全平台关闭（见 config/v8_args.yml common）。sandbox 仍强制
 # 关闭：jitless 平台同样走跨 C ABI 的 user-malloc backing store，sandbox 会限制它。
 JITLESS_BUNDLE = {
     "v8_enable_webassembly": False,
