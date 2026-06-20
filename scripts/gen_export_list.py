@@ -34,6 +34,9 @@ EMBEDDING_SYMBOLS = [
     "napi_v8_inspector_start",
     "napi_v8_inspector_stop",
     "napi_v8_inspector_wait_for_connection",
+    # Host-driven event-loop tick: pump foreground tasks + drain finalizers
+    # (napi_v8/embedding.h).
+    "napi_v8_run_event_loop_tasks",
     # SharedArrayBuffer extensions (napi_v8/sab.h).
     "napi_v8_create_shared_arraybuffer",
     "napi_v8_is_shared_arraybuffer",

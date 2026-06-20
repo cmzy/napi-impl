@@ -124,6 +124,7 @@ _napi_v8_inspector_start
 _napi_v8_inspector_stop
 _napi_v8_inspector_wait_for_connection
 _napi_v8_is_shared_arraybuffer
+_napi_v8_run_event_loop_tasks
 _napi_wrap
 _node_api_create_external_string_latin1
 _node_api_create_external_string_utf16

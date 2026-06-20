@@ -137,6 +137,28 @@ struct napi_env__ {
     // The finalizer can be deleted after this call.
     virtual void DequeueFinalizer(v8impl::RefTracker *finalizer) { pending_finalizers.erase(finalizer); }
 
+    // Drain the deferred second-pass finalizers parked in `pending_finalizers`.
+    // Node.js does this from a libuv SetImmediate every event-loop tick
+    // (node_napi_env__::DrainFinalizerQueue). This embedding has no libuv loop,
+    // so the host drives it via the exported napi_v8_drain_finalizers(env) at a
+    // safe point (e.g. each microtask checkpoint / frame) — the "returning to
+    // the event loop" point the EnqueueFinalizer contract above requires.
+    // Without it every napi_wrap'd object (TextMetrics, gradients, ...) is
+    // finalized only at env teardown.
+    void DrainFinalizerQueue() {
+        if (draining_finalizers || in_gc_finalizer)
+            return; // re-entrancy / never drain from inside GC
+        draining_finalizers = true;
+        // A finalizer may enqueue more finalizers, so loop until the queue is
+        // empty (same invariant as node_napi_env__::DrainFinalizerQueue).
+        while (!pending_finalizers.empty()) {
+            v8impl::RefTracker *ref_tracker = *pending_finalizers.begin();
+            pending_finalizers.erase(ref_tracker);
+            ref_tracker->Finalize();
+        }
+        draining_finalizers = false;
+    }
+
     virtual void DeleteMe() {
         // First we must finalize those references that have `napi_finalizer`
         // callbacks. The reason is that addons might store other references which
@@ -178,6 +200,7 @@ struct napi_env__ {
     void *instance_data = nullptr;
     int32_t module_api_version = NODE_API_DEFAULT_MODULE_API_VERSION;
     bool in_gc_finalizer = false;
+    bool draining_finalizers = false; // re-entrancy guard for DrainFinalizerQueue
 
 protected:
     // Should not be deleted directly. Delete with `napi_env__::DeleteMe()`

@@ -45,6 +45,17 @@ NAPI_EXTERN napi_status NAPI_CDECL napi_create_env(napi_runtime runtime,
 
 NAPI_EXTERN napi_status NAPI_CDECL napi_destroy_env(napi_env env);
 
+// Single "event-loop tick" hook. This embedding has no libuv loop, so the host
+// must call this once per event-loop iteration at a safe point (outside GC, when
+// calling into JS is OK). It does the per-tick work Node would do automatically:
+//   - pumps the V8 foreground task runner (runs FinalizationRegistry cleanup
+//     callbacks and other scheduled foreground tasks);
+//   - drains the deferred (second-pass) napi finalizer queue (frees napi_wrap'd
+//     natives whose JS wrappers were collected).
+// Without it, FinalizationRegistry callbacks never fire and every napi_wrap'd
+// object is finalized only at env teardown.
+NAPI_EXTERN napi_status NAPI_CDECL napi_v8_run_event_loop_tasks(napi_env env);
+
 #ifdef __cplusplus
 }  // extern "C"
 #endif

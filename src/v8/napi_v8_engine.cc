@@ -31,6 +31,10 @@ struct napi_runtime__ {
     std::unique_ptr<v8::ArrayBuffer::Allocator> allocator;
 };
 
+// Process-singleton V8 platform pointer, captured at napi_create_platform, used
+// by napi_v8_run_event_loop_tasks to pump the foreground task runner.
+static v8::Platform *g_v8_platform = nullptr;
+
 // ---- Concrete env subclass ------------------------------------------------
 
 namespace {
@@ -74,14 +78,21 @@ napi_status NAPI_CDECL napi_create_platform(int argc, char **argv, int exec_argc
     if (result == nullptr)
         return napi_invalid_arg;
     auto *p = new napi_platform__();
-    // Expose gc() to JS so tests that rely on global.gc work.
+    // Baseline flags (kept for back-compat): expose gc() for tests, staged harmony.
     const char kFlags[] = "--expose-gc --harmony";
     v8::V8::SetFlagsFromString(kFlags, sizeof(kFlags) - 1);
+    // Honor host-supplied V8 flags passed via argv (e.g. iOS --jitless, heap
+    // limits). argv[0] is the program name; SetFlagsFromCommandLine parses
+    // argv[1..]. Must run before V8::Initialize (it does). keep_flags=false so
+    // recognized flags are consumed; unknown ones are left in argv (ignored).
+    if (argc > 0 && argv != nullptr) {
+        int ac = argc;
+        v8::V8::SetFlagsFromCommandLine(&ac, argv, /*remove_flags=*/false);
+    }
     p->platform = v8::platform::NewDefaultPlatform();
+    g_v8_platform = p->platform.get(); // for napi_v8_run_event_loop_tasks
     v8::V8::InitializePlatform(p->platform.get());
     v8::V8::Initialize();
-    (void) argc;
-    (void) argv;
     (void) exec_argc;
     (void) exec_argv;
     (void) err_handler;
@@ -151,6 +162,30 @@ napi_status NAPI_CDECL napi_destroy_env(napi_env env) {
     }
     env->Unref(); // matches initial refs=1 from napi_env__ ctor; triggers DeleteMe
     iso->Exit();
+    return napi_ok;
+}
+
+napi_status NAPI_CDECL napi_v8_run_event_loop_tasks(napi_env env) {
+    if (env == nullptr)
+        return napi_invalid_arg;
+    // Single host-driven "event-loop tick" hook. This bare embedding has no
+    // libuv loop, so the host (AmeCanvas event loop) must call this at a safe
+    // point — isolate + context entered, a handle scope open, not inside GC.
+    // It performs the work Node would do per event-loop iteration:
+    //   1. Pump the V8 foreground task runner — runs FinalizationRegistry
+    //      cleanup callbacks and any other foreground tasks V8 scheduled
+    //      (without this they never fire).
+    //   2. Drain the deferred (second-pass) napi finalizer queue — frees
+    //      napi_wrap'd natives whose JS wrappers were collected (without this
+    //      they leak until env teardown).
+    // (Microtasks stay on V8's kAuto policy and need no explicit pump here.)
+    if (g_v8_platform != nullptr) {
+        // kDoNotWait: run all ready tasks, then return without blocking.
+        while (v8::platform::PumpMessageLoop(g_v8_platform, env->isolate,
+                                             v8::platform::MessageLoopBehavior::kDoNotWait)) {
+        }
+    }
+    env->DrainFinalizerQueue();
     return napi_ok;
 }
 
