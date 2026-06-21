@@ -10,6 +10,7 @@
 // the resulting libnapi_hermes is a drop-in ABI swap for libnapi_v8: the host
 // uses the identical embedding API + standard napi_* surface across engines.
 
+#include <atomic>
 #include <deque>
 #include <functional>
 #include <memory>
@@ -40,6 +41,17 @@ constexpr int32_t kNodeApiVersion = 9;
 class EmbedTaskRunner final : public hermes::node_api::TaskRunner {
 public:
     void post(std::unique_ptr<hermes::node_api::Task> task) noexcept override {
+        // During runtime teardown, ~vm::Runtime finalizes externals and posts
+        // their second-pass finalizers here. A queued task captures a counted
+        // ref to the node-api env, so it would outlive vm::Runtime; when our
+        // task runner is later destroyed, dropping that ref runs the env's
+        // deleteMe() against an already-freed runtime — a use-after-free. Run
+        // teardown tasks inline instead (this mirrors Hermes' own
+        // isShuttingDown_ path, which finalizes immediately).
+        if (shutting_down_.load(std::memory_order_acquire)) {
+            task->invoke();
+            return;
+        }
         std::lock_guard<std::mutex> lk(mu_);
         queue_.push_back(std::move(task));
     }
@@ -59,9 +71,16 @@ public:
         }
     }
 
+    // After this, post() runs tasks inline (called just before vm::Runtime is
+    // destroyed). One-way latch.
+    void beginShutdown() noexcept {
+        shutting_down_.store(true, std::memory_order_release);
+    }
+
 private:
     std::mutex mu_;
     std::deque<std::unique_ptr<hermes::node_api::Task>> queue_;
+    std::atomic<bool> shutting_down_{false};
 };
 
 // The embedding API has no per-env handle to carry engine state, so map the
@@ -150,6 +169,10 @@ napi_status NAPI_CDECL napi_destroy_runtime(napi_runtime runtime) {
             std::lock_guard<std::mutex> lk(g_envs_mu);
             EnvMap().erase(runtime->env);
         }
+    }
+    if (runtime->task_runner) {
+        runtime->task_runner->drain();         // flush already-queued finalizers
+        runtime->task_runner->beginShutdown(); // teardown-posted finalizers run inline
     }
     runtime->runtime.reset(); // tears down the VM and its node-api env
     delete runtime;
