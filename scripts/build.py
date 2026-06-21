@@ -209,20 +209,40 @@ def _cmake_build_type(config: str) -> str:
     return "Debug" if config == "debug" else "Release"
 
 
+# Native host platforms can build Hermes directly. Cross targets (android/ios,
+# and windows from a non-Windows host) additionally need a host-built hermesc
+# imported into the target Hermes build (Hermes' `imported-hermesc`); that wiring
+# is not yet implemented here — see PLAN.md M7.3.
+_NATIVE_PLATFORMS = {"linux", "mac", "windows"}
+
+
+def _toolchain_file(platform: str) -> Path | None:
+    tc = ROOT / "cmake" / "toolchains" / f"{platform}.cmake"
+    return tc if tc.exists() else None
+
+
 def build_hermes_path(platform: str, arch: str, config: str, package: bool):
     if not (HERMES_DIR / ".git").is_dir():
         raise SystemExit(
             "[error] third_party/hermes-windows missing — run scripts/setup_hermes.py first")
+    if platform not in _NATIVE_PLATFORMS:
+        raise SystemExit(
+            f"[todo] hermes cross-build for '{platform}' needs host hermesc import "
+            "(imported-hermesc) — not implemented yet (PLAN.md M7.3)")
 
     build_type = _cmake_build_type(config)
     tag = f"hermes-{platform}-{arch}-{config}"
     hermes_build = ROOT / "out" / "build" / f"hermes-engine-{platform}-{arch}-{config}"
     lib_build = ROOT / "out" / "build" / tag
 
+    toolchain = _toolchain_file(platform)
+    tc_arg = [f"-DCMAKE_TOOLCHAIN_FILE={toolchain}"] if toolchain else []
+
     # 1) Build the Hermes engine standalone (it must be its own CMake root; it
     #    cannot be add_subdirectory'd). We only need the Node-API + VM archives.
     if not (hermes_build / "build.ninja").exists():
         run(["cmake", "-S", str(HERMES_DIR), "-B", str(hermes_build), "-G", "Ninja",
+             *tc_arg,
              f"-DCMAKE_BUILD_TYPE={build_type}",
              "-DHERMES_ENABLE_TOOLS=ON",        # hermesc compiles the baked-in JS
              "-DHERMES_ENABLE_TEST_SUITE=OFF"])
@@ -231,6 +251,7 @@ def build_hermes_path(platform: str, arch: str, config: str, package: bool):
 
     # 2) Build libnapi_hermes against those prebuilt archives.
     run(["cmake", "-S", str(ROOT), "-B", str(lib_build), "-G", "Ninja",
+         *tc_arg,
          "-DNAPI_ENGINE=hermes",
          f"-DCMAKE_BUILD_TYPE={build_type}",
          f"-DHERMES_BUILD_DIR={hermes_build}"])
@@ -238,7 +259,9 @@ def build_hermes_path(platform: str, arch: str, config: str, package: bool):
 
     print(f"\n[done] artifacts -> {lib_build / 'src' / 'hermes'}")
     if package:
-        print("[warn] --package not implemented for hermes yet")
+        from importlib import import_module
+        pkg = import_module("package_cmake")
+        pkg.package(engine="hermes", platform=platform, arch=arch, config=config)
 
 
 # ---------------------------------------------------------------------------
