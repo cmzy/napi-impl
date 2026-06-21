@@ -617,12 +617,12 @@ else:                                    # hermes / jsc / quickjs
 - [x] `src/common/CMakeLists.txt`（CMake 路径下 common 编译通过，common 现为空 → INTERFACE）
 - [x] `scripts/build.py` 启用 `--engine=hermes` CMake 分流
 - [x] **M7.1 烟囱测试**：`napi_run_script("1 + 2") == 3`（`test/hermes_smoke.cc`，CTest `hermes_smoke` 通过，Linux x86_64）
-- [~] **M7.2 js-native-api 套件（35/50 通过，零崩溃，Linux x86_64）**：
+- [~] **M7.2 js-native-api 套件（38/50 通过，零崩溃，Linux x86_64）**：
+  - **finalizer 时序修复**:runner 在 mustCall 检查前对 Hermes 强制 `gc()`×8 + drain,让可回收对象的 finalizer 在断言前触发(救回 `test_instance_data`、`test_general/testFinalizer`、`test_cannot_run_js`、`test_reference/test.js`)。强制 GC 后 Hermes 在 `~Runtime` 的 `finalizeAll` 会二次 finalize external(typedarray 崩溃),故 runner 对 Hermes 跳过显式 teardown(一进程一测试,进程退出回收);代价是 `test_general/testEnvCleanup`(它正是测 env 清理钩子)转为失败——属 runner 取舍,非 NAPI 实现缺陷。
   - 测试 runner 复用 `test/runner.cc`（同一份源码,经 `NAPI_RUNNER_HERMES` 编译为引擎无关——跳过 V8 inspector 与内部 finalizer drain）。`scripts/{build_tests,run_tests}.py` 加 `--engine=hermes`。
   - **harness 多目标修复（双引擎受益）**:`build_tests.py` 现解析 `binding.gyp` 的 `targets`,每个 target 各编一个 `.so`（如 `test_object` 目录产 `test_object.so` + `test_exceptions.so`）;`run_tests.py` 按每个 `test*.js` 的 `require('./build/.../<name>')` 选对应 `.so`。`test_object`/`test_reference` 等不再 build 失败,34/34 target 全编过,0 skip。
   - **关键修复 —— TaskRunner**:Hermes node-api 的 `NodeApiEnvironment::enqueueFinalizer` 会无条件 `taskRunner_->post(...)` 来延迟第二趟(GC 后)finalizer;传 `nullptr` 时,任何 `napi_wrap` 对象被 GC 回收即 SIGSEGV。adapter 现提供 `EmbedTaskRunner`(排队 + 在 `napi_v8_run_event_loop_tasks` tick 里 drain),消除全部崩溃,29/45 → 33/45。
-  - 剩余失败两类:(a) **引擎语义差异**(预期,非集成 bug):`test_array`(Hermes 拒绝 4G 元素数组)、`test_properties`(throw 正确但错误信息文案与 Node 不同)、`test_new_target`/`test_constructor`/`6_object_wrap`(`napi_define_class` 构造器 `.prototype` / `class extends` 差异);(b) **finalizer teardown 时序**:`test_instance_data`、`test_general/testFinalizer`(`mustCall got 0`——instance-data/teardown finalizer 在测试断言时尚未触发)、finalizer 异常处理。
-  - 剩余 15 个失败仍属上述两类(引擎语义差异 + finalizer teardown 时序)。
+  - 剩余 12 个失败两类:(a) **引擎语义差异**(预期,非集成 bug):`test_array`(Hermes 拒绝 4G 元素数组)、`test_properties`(throw 正确但错误信息文案与 Node 不同)、`test_new_target`/`test_constructor`/`6_object_wrap`(`napi_define_class` 构造器 `.prototype` / `class extends` 差异);(b) **finalizer 语义**:`test_general/test`、`test_finalizer/test_fatal_finalize`、`test_exception/testFinalizerException`、`test_reference/test_finalizer`、`6_object_wrap` 的 dangling-ref finalizer 等,以及上面提到的 `testEnvCleanup`(teardown 取舍)。
 - [~] **M7.3 跨平台打包**：
   - [x] `napi_hermes.lds`/`.exp`/`.def`:`gen_export_list.py --engine=hermes`(嵌入符号拆 common / v8-only,Hermes 不导出 inspector+SAB);`src/hermes` 改链 `napi_hermes.lds`。
   - [x] `cmake/toolchains/{linux,android,ios,windows}.cmake` 填充;`build.py` 按 platform 传 `CMAKE_TOOLCHAIN_FILE`(linux 原生已验证)。

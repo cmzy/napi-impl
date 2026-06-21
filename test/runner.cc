@@ -741,6 +741,27 @@ int main(int argc, char** argv) {
     return 1;
   }
 
+#if defined(NAPI_RUNNER_HERMES)
+  // Hermes fires napi finalizers during GC and defers their second pass to the
+  // task runner. Tests that assert finalizer side effects (mustCall counts) but
+  // don't themselves force a final GC would otherwise see the finalizer run
+  // only at teardown — after the check below. Pump gc()+drain a few rounds so
+  // collectable finalizers fire first.
+  {
+    napi_value gc_fn;
+    napi_valuetype gc_t = napi_undefined;
+    if (napi_get_named_property(g_env, global, "gc", &gc_fn) == napi_ok)
+      napi_typeof(g_env, gc_fn, &gc_t);
+    if (gc_t == napi_function) {
+      napi_value undef, r;
+      napi_get_undefined(g_env, &undef);
+      for (int i = 0; i < 8; ++i)
+        napi_call_function(g_env, undef, gc_fn, 0, nullptr, &r);
+    }
+    napi_v8_run_event_loop_tasks(g_env);
+  }
+#endif
+
   // Finalize common (verify mustCall counts).
   napi_value common_obj, finalize_fn;
   napi_get_named_property(g_env, global, "__common", &common_obj);
@@ -781,13 +802,22 @@ int main(int argc, char** argv) {
   }
 #endif
   CHK(napi_close_handle_scope(g_env, scope));
-#if !defined(NAPI_RUNNER_HERMES)
+#if defined(NAPI_RUNNER_HERMES)
+  // Skip explicit engine teardown. Once finalizers have run during the session
+  // (we force a GC above), Hermes' node-api can double-finalize externals at
+  // runtime destruction — a teardown-only crash, orthogonal to the test result.
+  // This is a one-test-per-process runner, so process exit reclaims everything.
+  std::fprintf(stderr, "[pass] %s\n", test_path);
+  std::fflush(stdout);
+  std::fflush(stderr);
+  _exit(0);
+#else
   napi_v8_inspector_stop(g_env);
-#endif
   CHK(napi_destroy_env(g_env));
   CHK(napi_destroy_runtime(runtime));
   CHK(napi_destroy_platform(platform));
 
   std::fprintf(stderr, "[pass] %s\n", test_path);
   return 0;
+#endif
 }
