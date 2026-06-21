@@ -89,8 +89,9 @@ def main():
 
     runner = (ROOT / "third_party" / "v8" / "out"
               / f"napi-{args.platform}-{args.arch}-{args.config}" / "runner")
+    rel = "Release" if args.platform == "mac" else f"Release_{args.platform}"
     binding = (ROOT / "test" / "js-native-api" / "test_general" / "build"
-               / "Release" / "test_general.so")
+               / rel / "test_general.so")
     test_js = ROOT / "test" / "js-native-api" / "test_general" / "testNapiRun.js"
 
     for p in (runner, binding, test_js):
@@ -100,6 +101,8 @@ def main():
     env = os.environ.copy()
     env["DYLD_LIBRARY_PATH"] = str(runner.parent) + os.pathsep + env.get(
         "DYLD_LIBRARY_PATH", "")
+    env["LD_LIBRARY_PATH"] = str(runner.parent) + os.pathsep + env.get(
+        "LD_LIBRARY_PATH", "")
 
     proc = subprocess.Popen(
         [str(runner), str(binding), "test_general", str(test_js),

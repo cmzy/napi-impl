@@ -88,8 +88,14 @@ namespace napi_v8 {
                 g_live.erase(this);
             }
             Stop();
-            if (inspector_)
+            if (inspector_) {
+                // contextDestroyed materializes the context Local, so a HandleScope
+                // must be active. napi_v8_inspector_stop() runs after the host has
+                // closed its own handle scope; the isolate is still entered (the env
+                // is destroyed later), so open a scope here.
+                v8::HandleScope hs(isolate_);
                 inspector_->contextDestroyed(context_.Get(isolate_));
+            }
         }
 
         bool InspectorBridge::Start(int port) {

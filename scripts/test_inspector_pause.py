@@ -47,8 +47,9 @@ def main():
 
     runner = (ROOT / "third_party" / "v8" / "out"
               / f"napi-{args.platform}-{args.arch}-{args.config}" / "runner")
+    rel = "Release" if args.platform == "mac" else f"Release_{args.platform}"
     binding = (ROOT / "test" / "js-native-api" / "test_general" / "build"
-               / "Release" / "test_general.so")
+               / rel / "test_general.so")
     test_js = ROOT / "test" / "js-native-api" / "test_general" / "testNapiRun.js"
 
     for p in (runner, binding, test_js):
@@ -125,6 +126,10 @@ def main():
     except subprocess.TimeoutExpired:
         proc.kill()
         sys.exit("runner did not exit — pause loop deadlocked")
+
+    if rc != 0:
+        err = proc.stderr.read().decode(errors="replace") if proc.stderr else ""
+        sys.stderr.write("---- runner stderr ----\n" + err + "\n----\n")
 
     if not saw_paused:
         sys.exit("never received Debugger.paused (pause loop not entered)")
