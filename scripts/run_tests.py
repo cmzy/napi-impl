@@ -61,6 +61,9 @@ def main():
     ap.add_argument("--verbose", action="store_true")
     ap.add_argument("--keep-going", action="store_true",
                     help="report all failures instead of stopping at first")
+    ap.add_argument("--min-pass", type=int, default=None,
+                    help="baseline gate: exit 0 if at least N tests pass "
+                         "(tolerates known engine divergences), else exit 1")
     args = ap.parse_args()
 
     runner = runner_bin(args.platform, args.arch, args.config, args.engine)
@@ -182,6 +185,11 @@ def main():
         print("\nfailures:")
         for t, m in failed[:20]:
             print(f"  {t}  --  {m}")
+    if args.min_pass is not None:
+        ok = len(passed) >= args.min_pass
+        print(f"\n[baseline] passed {len(passed)} (min {args.min_pass}) -> "
+              f"{'OK' if ok else 'REGRESSION'}")
+        sys.exit(0 if ok else 1)
     sys.exit(0 if not failed else 1)
 
 

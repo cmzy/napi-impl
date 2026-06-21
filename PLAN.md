@@ -630,6 +630,7 @@ else:                                    # hermes / jsc / quickjs
   - [x] `package_cmake.py` / `package_android.py` 引擎参数化(`--engine`);`build.py --package` 走 `package_cmake`(linux CMake package 已验证)。
   - [x] **Android 交叉编译 + AAR(已验证 arm64-v8a)**:`build.py --engine=hermes --platform=android` 自动:先原生构建 host `hermesc`/`shermes` 并经 `-DIMPORT_HOST_COMPILERS=<host>/ImportHostCompilers.cmake` 导入;目标 Hermes 用 NDK toolchain + `HERMES_UNICODE_LITE=ON`(Android 无系统 ICU)+ `BOOST_CONTEXT_ASSEMBLER=gas`(arm64 elf 的 clang_gas 变体只存在于 Windows pe)交叉编译 `hermesNodeApi`/`hermesvm_a`;再链我们的 `libnapi_hermes.so`(`FindHermes` 加 `NO_CMAKE_FIND_ROOT_PATH`、ICU 改可选、Android 补 `liblog`);strip 后 `package_android.py` 产 `napi-hermes.aar`(Prefab v2,arm64-v8a 的 `.so` 4.0M)。导出仍仅 131 个 `napi_*`/`node_api_*`,零泄漏。
   - [ ] iOS 交叉编译(同 host-hermesc 机制,toolchain 用 ios.cmake;未跑)。
+  - [x] **CI**(`.github/workflows/hermes-ci.yml`):linux job 跑 build + smoke + 套件基线门(`run_tests.py --min-pass 40`)+ 导出符号纪律检查;android job 用 runner 预装 NDK 产 `napi-hermes.aar` 并上传 artifact。基线回退(<40)即红。
   - [ ] `scripts/verify_flags_parity.py` 接入。
 
 **已验收（M7.1）：** `python3 scripts/build.py --engine=hermes --platform=linux --arch=x86_64` 产出 `out/build/hermes-linux-x86_64/src/hermes/libnapi_hermes.so`，仅导出 `napi_*`，下游仅用 `napi_*` 即可端到端跑通。
