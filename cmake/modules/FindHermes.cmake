@@ -30,14 +30,19 @@ if(NOT HERMES_BUILD_DIR)
     "does this) and pass -DHERMES_BUILD_DIR=<dir>.")
 endif()
 
+# NO_CMAKE_FIND_ROOT_PATH: cross toolchains (Android NDK) set
+# CMAKE_FIND_ROOT_PATH_MODE_LIBRARY=ONLY, which would otherwise confine
+# find_library to the target sysroot and miss our archives in HERMES_BUILD_DIR.
 find_library(HERMES_NODEAPI_LIB  NAMES hermesNodeApi
-  PATHS ${HERMES_BUILD_DIR} PATH_SUFFIXES API/hermes_node_api NO_DEFAULT_PATH)
+  PATHS ${HERMES_BUILD_DIR} PATH_SUFFIXES API/hermes_node_api
+  NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH)
 find_library(HERMES_VM_LIB       NAMES hermesvm_a
-  PATHS ${HERMES_BUILD_DIR} PATH_SUFFIXES lib NO_DEFAULT_PATH)
+  PATHS ${HERMES_BUILD_DIR} PATH_SUFFIXES lib
+  NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH)
 find_library(HERMES_BOOSTCTX_LIB NAMES boost_context
   PATHS ${HERMES_BUILD_DIR}
   PATH_SUFFIXES external/boost/boost_1_86_0/libs/context
-  NO_DEFAULT_PATH)
+  NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH)
 # Boost version dir may drift across Hermes updates; fall back to a recursive glob.
 if(NOT HERMES_BOOSTCTX_LIB)
   file(GLOB_RECURSE _hermes_boostctx "${HERMES_BUILD_DIR}/*libboost_context.a")
@@ -70,9 +75,22 @@ endforeach()
 
 set(HERMES_ARCHIVES ${HERMES_NODEAPI_LIB} ${HERMES_VM_LIB} ${HERMES_BOOSTCTX_LIB})
 
+# ICU is needed only when Hermes was built against it (POSIX desktop uses system
+# ICU for unicode/Intl). Android/iOS builds use HERMES_UNICODE_LITE — no ICU — so
+# ICU is optional here: link it when present, skip it otherwise.
+set(_hermes_icu_libs "")
+if(ICU_FOUND)
+  set(_hermes_icu_libs ICU::i18n ICU::uc ICU::data)
+endif()
+
+# Android: Hermes' VM logs through liblog (__android_log_*).
+set(_hermes_sys_libs Threads::Threads ${CMAKE_DL_LIBS})
+if(ANDROID)
+  list(APPEND _hermes_sys_libs log)
+endif()
+
 find_package_handle_standard_args(Hermes
-  REQUIRED_VARS HERMES_NODEAPI_LIB HERMES_VM_LIB HERMES_BOOSTCTX_LIB
-                ICU_FOUND HERMES_SRC_DIR)
+  REQUIRED_VARS HERMES_NODEAPI_LIB HERMES_VM_LIB HERMES_BOOSTCTX_LIB HERMES_SRC_DIR)
 
 if(Hermes_FOUND AND NOT TARGET Hermes::Hermes)
   add_library(Hermes::Hermes INTERFACE IMPORTED)
@@ -81,6 +99,6 @@ if(Hermes_FOUND AND NOT TARGET Hermes::Hermes)
   # The three archives have cyclic references; wrap them in a rescan group.
   target_link_libraries(Hermes::Hermes INTERFACE
     "$<LINK_GROUP:RESCAN,${HERMES_NODEAPI_LIB},${HERMES_VM_LIB},${HERMES_BOOSTCTX_LIB}>"
-    ICU::i18n ICU::uc ICU::data
-    Threads::Threads ${CMAKE_DL_LIBS})
+    ${_hermes_icu_libs}
+    ${_hermes_sys_libs})
 endif()
