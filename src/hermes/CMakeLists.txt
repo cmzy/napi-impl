@@ -23,13 +23,12 @@ set_target_properties(napi_hermes PROPERTIES OUTPUT_NAME napi_hermes)
 
 target_link_libraries(napi_hermes PRIVATE napi_flags napi_common Hermes::Hermes)
 
-# Export only napi_*; hide all Hermes/VM/ICU/LLVH symbols.
-# TODO(M7): generate napi_hermes.lds via scripts/gen_export_list.py; the V8 list
-# is a strict superset (its V8-only entries are simply absent here, which a
-# version script tolerates).
+# Export only napi_*; hide all Hermes/VM/ICU/LLVH symbols. The Hermes export
+# list (scripts/gen_export_list.py --engine=hermes) omits the V8-only inspector
+# and SharedArrayBuffer extensions.
 if(NOT APPLE AND NOT MSVC)
   target_link_options(napi_hermes PRIVATE
-    "-Wl,--version-script=${NAPI_IMPL_ROOT}/gn/exports/napi_v8.lds")
+    "-Wl,--version-script=${NAPI_IMPL_ROOT}/gn/exports/napi_hermes.lds")
 endif()
 
 # ---- smoke test (M7.1: napi_run_script("1+2") == 3) -----------------------

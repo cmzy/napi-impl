@@ -23,27 +23,35 @@ ROOT = Path(__file__).resolve().parent.parent
 INCLUDE = ROOT / "include" / "napi"
 EXPORTS = ROOT / "gn" / "exports"
 
-# Our own embedding API (no upstream equivalent).
-EMBEDDING_SYMBOLS = [
+# Cross-engine embedding API (napi_v8/embedding.h) — every backend exports these.
+# The napi_v8_ prefix on the tick is kept across engines so libnapi_<engine> is
+# a drop-in ABI swap.
+EMBEDDING_COMMON = [
     "napi_create_platform",
     "napi_destroy_platform",
     "napi_create_runtime",
     "napi_destroy_runtime",
     "napi_create_env",
     "napi_destroy_env",
-    "napi_v8_inspector_start",
-    "napi_v8_inspector_stop",
-    "napi_v8_inspector_wait_for_connection",
-    # Host-driven event-loop tick: pump foreground tasks + drain finalizers
-    # (napi_v8/embedding.h).
+    # Host-driven event-loop tick: pump foreground tasks + drain finalizers.
     "napi_v8_run_event_loop_tasks",
-    # SharedArrayBuffer extensions (napi_v8/sab.h).
-    "napi_v8_create_shared_arraybuffer",
-    "napi_v8_is_shared_arraybuffer",
-    "napi_v8_get_shared_arraybuffer_info",
     # node_api_* extensions we implement beyond js_native_api proper.
     "node_api_post_finalizer",
 ]
+
+# V8-only embedding extensions (inspector + SharedArrayBuffer); other engines do
+# not implement these, so they are omitted from their export lists.
+EMBEDDING_V8_ONLY = [
+    "napi_v8_inspector_start",
+    "napi_v8_inspector_stop",
+    "napi_v8_inspector_wait_for_connection",
+    "napi_v8_create_shared_arraybuffer",
+    "napi_v8_is_shared_arraybuffer",
+    "napi_v8_get_shared_arraybuffer_info",
+]
+
+# Back-compat alias (the V8 path used this single list).
+EMBEDDING_SYMBOLS = EMBEDDING_COMMON + EMBEDDING_V8_ONLY
 
 
 def parse_def(path: Path) -> list[str]:
@@ -94,15 +102,25 @@ def write_def(syms: list[str], path: Path):
 
 
 def main():
+    import argparse
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--engine", default="v8", choices=["v8", "hermes"],
+                    help="emit napi_<engine>.{lds,exp,def}")
+    args = ap.parse_args()
+
+    embedding = (EMBEDDING_COMMON + EMBEDDING_V8_ONLY
+                 if args.engine == "v8" else EMBEDDING_COMMON)
+    prefix = f"napi_{args.engine}"
+
     EXPORTS.mkdir(parents=True, exist_ok=True)
-    syms = sorted(set(load_napi_symbols() + EMBEDDING_SYMBOLS))
+    syms = sorted(set(load_napi_symbols() + embedding))
     if not syms:
         print("[warn] no symbols collected; export files unchanged")
         return
-    write_lds(syms, EXPORTS / "napi_v8.lds")
-    write_exp(syms, EXPORTS / "napi_v8.exp")
-    write_def(syms, EXPORTS / "napi_v8.def")
-    print(f"[ok] generated {len(syms)} symbols -> {EXPORTS}/napi_v8.{{lds,exp,def}}")
+    write_lds(syms, EXPORTS / f"{prefix}.lds")
+    write_exp(syms, EXPORTS / f"{prefix}.exp")
+    write_def(syms, EXPORTS / f"{prefix}.def")
+    print(f"[ok] generated {len(syms)} symbols -> {EXPORTS}/{prefix}.{{lds,exp,def}}")
 
 
 if __name__ == "__main__":
