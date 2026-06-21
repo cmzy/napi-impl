@@ -10,6 +10,7 @@
 // the resulting libnapi_hermes is a drop-in ABI swap for libnapi_v8: the host
 // uses the identical embedding API + standard napi_* surface across engines.
 
+#include <deque>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -18,11 +19,43 @@
 #include "hermes/BCGen/HBC/HBC.h"        // hermes::hbc::CompileFlags
 #include "hermes/Public/RuntimeConfig.h" // hermes::vm::RuntimeConfig
 #include "hermes/VM/Runtime.h"           // hermes::vm::Runtime, ExecutionStatus
-#include "hermes_node_api.h"             // hermes::node_api::{getOrCreateNodeApiEnvironment, openNodeApiScope, closeNodeApiScope}
+#include "hermes_node_api.h"             // hermes::node_api::{getOrCreateNodeApiEnvironment, openNodeApiScope, closeNodeApiScope, Task, TaskRunner}
 
 #include "napi_v8/embedding.h"           // our cross-engine embedding C ABI
 
 namespace {
+
+// Hermes' Node-API defers second-pass (post-GC) finalizers by posting a task to
+// the env's TaskRunner — and NodeApiEnvironment::enqueueFinalizer dereferences
+// it unconditionally, so a null runner segfaults the first time a napi_wrap'd
+// external is collected. We supply a minimal runner that queues posted tasks
+// and runs them when the host pumps the event loop (napi_v8_run_event_loop_tasks).
+class EmbedTaskRunner final : public hermes::node_api::TaskRunner {
+public:
+    void post(std::unique_ptr<hermes::node_api::Task> task) noexcept override {
+        std::lock_guard<std::mutex> lk(mu_);
+        queue_.push_back(std::move(task));
+    }
+
+    // Run all queued tasks, including any they enqueue transitively.
+    void drain() noexcept {
+        for (;;) {
+            std::unique_ptr<hermes::node_api::Task> task;
+            {
+                std::lock_guard<std::mutex> lk(mu_);
+                if (queue_.empty())
+                    break;
+                task = std::move(queue_.front());
+                queue_.pop_front();
+            }
+            task->invoke();
+        }
+    }
+
+private:
+    std::mutex mu_;
+    std::deque<std::unique_ptr<hermes::node_api::Task>> queue_;
+};
 
 // The embedding API has no per-env handle to carry engine state, so map the
 // opaque napi_env back to the runtime that owns it (and the scope we keep open
@@ -49,6 +82,7 @@ struct napi_platform__ {
 
 struct napi_runtime__ {
     std::shared_ptr<hermes::vm::Runtime> runtime;
+    std::shared_ptr<EmbedTaskRunner> task_runner;
     napi_platform platform = nullptr;
     napi_env env = nullptr; // root node-api env (owned by the VM runtime)
     void *env_scope = nullptr;
@@ -94,6 +128,7 @@ napi_status NAPI_CDECL napi_create_runtime(napi_platform platform, napi_runtime 
         delete r;
         return napi_generic_failure;
     }
+    r->task_runner = std::make_shared<EmbedTaskRunner>();
     *result = r;
     return napi_ok;
 }
@@ -130,7 +165,7 @@ napi_status NAPI_CDECL napi_create_env(napi_runtime runtime, napi_env *result) {
         hermes::vm::CallResult<napi_env> envRes = hermes::node_api::getOrCreateNodeApiEnvironment(
                 *runtime->runtime,
                 compileFlags,
-                /*taskRunner*/ nullptr,
+                runtime->task_runner,
                 unhandled,
                 NAPI_VERSION);
         if (envRes.getStatus() == hermes::vm::ExecutionStatus::EXCEPTION)
@@ -182,7 +217,10 @@ napi_status NAPI_CDECL napi_v8_run_event_loop_tasks(napi_env env) {
         if (it != EnvMap().end())
             owner = it->second.runtime;
     }
-    if (owner != nullptr && owner->runtime)
+    if (owner != nullptr && owner->runtime) {
         owner->runtime->drainJobs(); // run pending microtasks (Promise jobs)
+        if (owner->task_runner)
+            owner->task_runner->drain(); // run deferred second-pass finalizers
+    }
     return napi_ok;
 }

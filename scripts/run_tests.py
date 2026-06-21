@@ -18,7 +18,10 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 TESTS = ROOT / "test" / "js-native-api"
 
-def runner_bin(platform: str, arch: str, config: str) -> Path:
+def runner_bin(platform: str, arch: str, config: str, engine: str = "v8") -> Path:
+    if engine == "hermes":
+        return (ROOT / "out" / "build"
+                / f"hermes-{platform}-{arch}-{config}" / "src" / "hermes" / "runner")
     return (ROOT / "third_party" / "v8" / "out"
             / f"napi-{platform}-{arch}-{config}" / "runner")
 
@@ -36,6 +39,7 @@ def list_tests(d: Path):
 
 def main():
     ap = argparse.ArgumentParser()
+    ap.add_argument("--engine", default="v8", choices=["v8", "hermes"])
     ap.add_argument("--platform", default="mac")
     ap.add_argument("--arch", default="x86_64")
     ap.add_argument("--config", default="release")
@@ -46,7 +50,7 @@ def main():
                     help="report all failures instead of stopping at first")
     args = ap.parse_args()
 
-    runner = runner_bin(args.platform, args.arch, args.config)
+    runner = runner_bin(args.platform, args.arch, args.config, args.engine)
     if not runner.exists():
         sys.exit(f"runner not built: {runner}")
 

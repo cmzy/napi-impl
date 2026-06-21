@@ -40,4 +40,11 @@ if(NAPI_HERMES_BUILD_TESTS)
   add_executable(hermes_smoke ${NAPI_IMPL_ROOT}/test/hermes_smoke.cc)
   target_link_libraries(hermes_smoke PRIVATE napi_flags napi_hermes)
   add_test(NAME hermes_smoke COMMAND hermes_smoke)
+
+  # The js-native-api host runner — same source as the V8 path (test/runner.cc),
+  # built engine-agnostic via NAPI_RUNNER_HERMES (skips V8 inspector + internal
+  # finalizer drain). scripts/run_tests.py --engine=hermes drives it.
+  add_executable(runner ${NAPI_IMPL_ROOT}/test/runner.cc)
+  target_compile_definitions(runner PRIVATE NAPI_RUNNER_HERMES)
+  target_link_libraries(runner PRIVATE napi_flags napi_hermes ${CMAKE_DL_LIBS})
 endif()

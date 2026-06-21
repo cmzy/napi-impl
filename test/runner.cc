@@ -51,13 +51,18 @@ extern "C" {
 #include "napi/js_native_api.h"
 #include "napi/node_api.h"
 #include "napi_v8/embedding.h"
+#if !defined(NAPI_RUNNER_HERMES)
 #include "napi_v8/inspector.h"
+#endif
 }
 
-// Pull in our internal env layout so we can drain pending finalizers
-// after a manual gc() call (V8 weak callbacks enqueue them but our
-// embedding has no event loop to flush automatically).
+#if !defined(NAPI_RUNNER_HERMES)
+// V8 path: pull in our internal env layout so we can drain pending finalizers
+// after a manual gc() call (V8 weak callbacks enqueue them but our embedding
+// has no event loop to flush automatically). The Hermes path drains via the
+// public embedding tick instead (napi_v8_run_event_loop_tasks).
 #include "../src/v8/js_native_api_v8.h"
+#endif
 
 // ---- helpers --------------------------------------------------------------
 
@@ -108,6 +113,11 @@ static napi_value JsConsoleLog(napi_env env, napi_callback_info info) {
 // gc()). Called from JS as `__drainFinalizers()` after `gc()` so that mustCall
 // assertions tied to finalizers fire before the test asserts.
 static napi_value JsDrainFinalizers(napi_env env, napi_callback_info /*info*/) {
+#if defined(NAPI_RUNNER_HERMES)
+  // Hermes runs napi_wrap finalizers during GC; flush any deferred engine work
+  // (microtasks / second-pass finalizers) through the public embedding tick.
+  napi_v8_run_event_loop_tasks(env);
+#else
   // Repeat: a finalizer can register more references; drain transitively but
   // bound the loop to avoid pathological cycles.
   for (int round = 0; round < 16; ++round) {
@@ -118,6 +128,7 @@ static napi_value JsDrainFinalizers(napi_env env, napi_callback_info /*info*/) {
       f->Finalize();
     }
   }
+#endif
   return nullptr;
 }
 
@@ -592,6 +603,7 @@ int main(int argc, char** argv) {
 
   CHK(napi_create_env(runtime, &g_env));
 
+#if !defined(NAPI_RUNNER_HERMES)
   // Optional: --inspect=<port>  among extra argv triggers the V8 inspector.
   for (int i = 4; i < argc; ++i) {
     const char* a = argv[i];
@@ -605,6 +617,7 @@ int main(int argc, char** argv) {
       }
     }
   }
+#endif
 
   napi_handle_scope scope;
   CHK(napi_open_handle_scope(g_env, &scope));
@@ -750,6 +763,7 @@ int main(int argc, char** argv) {
     }
   }
 
+#if !defined(NAPI_RUNNER_HERMES)
   // If the inspector was started, give the CDP client a short tail window so
   // post-test commands (like the smoke test's Runtime.evaluate) complete
   // before we tear V8 down.
@@ -765,8 +779,11 @@ int main(int argc, char** argv) {
       break;
     }
   }
+#endif
   CHK(napi_close_handle_scope(g_env, scope));
+#if !defined(NAPI_RUNNER_HERMES)
   napi_v8_inspector_stop(g_env);
+#endif
   CHK(napi_destroy_env(g_env));
   CHK(napi_destroy_runtime(runtime));
   CHK(napi_destroy_platform(platform));

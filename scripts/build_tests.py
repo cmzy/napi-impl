@@ -20,8 +20,11 @@ ROOT = Path(__file__).resolve().parent.parent
 TESTS = ROOT / "test" / "js-native-api"
 INCLUDE_NAPI = ROOT / "include"
 
-# Path to libNapiV8.dylib (mac arm64/x86_64 build dir, matching build.py).
-def lib_dir(platform: str, arch: str, config: str) -> Path:
+# Directory holding the engine's napi library (matching scripts/build.py output).
+def lib_dir(platform: str, arch: str, config: str, engine: str = "v8") -> Path:
+    if engine == "hermes":
+        return (ROOT / "out" / "build"
+                / f"hermes-{platform}-{arch}-{config}" / "src" / "hermes")
     return ROOT / "third_party" / "v8" / "out" / f"napi-{platform}-{arch}-{config}"
 
 
@@ -93,7 +96,12 @@ def build_one(feature_dir: Path, libdir: Path, dry_run: bool,
                 cxx = str(tc / f"aarch64-linux-android{api}-clang++")
         extra_flags = ["-fPIC"]
 
-    lib_link_name = "napi_v8" if (libdir / "libnapi_v8.so").exists() else "NapiV8"
+    if (libdir / "libnapi_hermes.so").exists():
+        lib_link_name = "napi_hermes"
+    elif (libdir / "libnapi_v8.so").exists():
+        lib_link_name = "napi_v8"
+    else:
+        lib_link_name = "NapiV8"
     cmd = [
         cxx,
         "-shared", "-fPIC", "-fvisibility=hidden",
@@ -137,6 +145,7 @@ def build_one(feature_dir: Path, libdir: Path, dry_run: bool,
 
 def main():
     ap = argparse.ArgumentParser()
+    ap.add_argument("--engine", default="v8", choices=["v8", "hermes"])
     ap.add_argument("--platform", default="mac")
     ap.add_argument("--arch", default="x86_64")
     ap.add_argument("--config", default="release")
@@ -144,8 +153,9 @@ def main():
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args()
 
-    libdir = lib_dir(args.platform, args.arch, args.config)
-    lib_names = ("libNapiV8.dylib", "libnapi_v8.so", "napi_v8.dll")
+    libdir = lib_dir(args.platform, args.arch, args.config, args.engine)
+    lib_names = ("libNapiV8.dylib", "libnapi_v8.so", "napi_v8.dll",
+                 "libnapi_hermes.so")
     if not any((libdir / n).exists() for n in lib_names):
         sys.exit(f"napi library not found in {libdir} — run scripts/build.py first")
 
