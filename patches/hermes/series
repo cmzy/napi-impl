@@ -1,3 +1,5 @@
 # patches applied in order by scripts/setup_hermes.py
 # format: one filename per line, # for comments
 0001-cmake-lit-ctest-case-insensitive-include.patch
+0002-node-api-create-function-with-prototype.patch
+0003-node-api-adjust-external-memory.patch

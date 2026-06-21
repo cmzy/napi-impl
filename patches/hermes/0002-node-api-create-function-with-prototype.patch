@@ -1,0 +1,29 @@
+diff --git a/API/hermes_node_api/hermes_node_api.cpp b/API/hermes_node_api/hermes_node_api.cpp
+index 5090a606..ce2c12d0 100644
+--- a/API/hermes_node_api/hermes_node_api.cpp
++++ b/API/hermes_node_api/hermes_node_api.cpp
+@@ -3434,14 +3434,22 @@ napi_status NodeApiEnvironment::createFunction(
+   std::unique_ptr<NodeApiHostFunctionContext> context =
+       std::make_unique<NodeApiHostFunctionContext>(
+           *this, callback, callbackData);
++  // Node-API functions are constructable (V8's napi_create_function uses
++  // ConstructorBehavior::kAllow), so the result must expose a writable
++  // '.prototype' — otherwise `new fn()`, `fn.prototype`, `instanceof`, and
++  // `class X extends fn` all break (test/js-native-api/test_new_target). Create
++  // the function with a fresh prototype object, mirroring napi_define_class.
++  vm::Handle<vm::JSObject> prototypeHandle{
++      runtime_.makeHandle(vm::JSObject::create(runtime_))};
+   vm::CallResult<vm::HermesValue> funcRes =
+-      vm::FinalizableNativeFunction::createWithoutPrototype(
++      vm::FinalizableNativeFunction::create(
+           runtime_,
+           context.get(),
+           &NodeApiHostFunctionContext::func,
+           &NodeApiHostFunctionContext::finalize,
+           name,
+-          /*paramCount:*/ 0);
++          /*paramCount:*/ 0,
++          prototypeHandle);
+   CHECK_STATUS(checkExecutionStatus(funcRes.getStatus()));
+   context.release(); // the context is now owned by the func.
+   *result = vm::vmcast<vm::Callable>(*funcRes);

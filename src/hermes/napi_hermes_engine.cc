@@ -25,6 +25,13 @@
 
 namespace {
 
+// Node-API version this embedding advertises (returned by napi_get_version).
+// Matches the node-api-headers we vendor (v1.9.0 / Node 22) and the upstream
+// js-native-api suite's expectation. Note 8<->9 cross no Hermes behavior gate
+// (those are at apiVersion >= 10 and == NAPI_VERSION_EXPERIMENTAL), so this only
+// affects the reported version, not API semantics.
+constexpr int32_t kNodeApiVersion = 9;
+
 // Hermes' Node-API defers second-pass (post-GC) finalizers by posting a task to
 // the env's TaskRunner — and NodeApiEnvironment::enqueueFinalizer dereferences
 // it unconditionally, so a null runner segfaults the first time a napi_wrap'd
@@ -167,7 +174,7 @@ napi_status NAPI_CDECL napi_create_env(napi_runtime runtime, napi_env *result) {
                 compileFlags,
                 runtime->task_runner,
                 unhandled,
-                NAPI_VERSION);
+                kNodeApiVersion);
         if (envRes.getStatus() == hermes::vm::ExecutionStatus::EXCEPTION)
             return napi_generic_failure;
         runtime->env = *envRes;
