@@ -1,0 +1,18 @@
+diff --git a/API/hermes_node_api/hermes_node_api.cpp b/API/hermes_node_api/hermes_node_api.cpp
+index 5090a606..ca675692 100644
+--- a/API/hermes_node_api/hermes_node_api.cpp
++++ b/API/hermes_node_api/hermes_node_api.cpp
+@@ -2154,6 +2154,13 @@ class NodeApiReferenceWithFinalizer final : public NodeApiReference {
+     finalizer_.callFinalizer(env_);
+   }
+ 
++  // napi_remove_wrap detaches a user-owned wrap; its user finalizer must then
++  // never run (test/js-native-api/6_object_wrap test-object-wrap-ref). The base
++  // resetFinalizer() is a no-op, so clear our composed finalizer here.
++  void resetFinalizer() noexcept override {
++    finalizer_ = NodeApiFinalizer(nullptr, nullptr, nullptr);
++  }
++
+   void invokeFinalizerFromGC() noexcept override {
+     // Call resetStorage to clean up finalizerHolder_ backlink
+     resetStorage();
