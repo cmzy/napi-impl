@@ -1,0 +1,6 @@
+# Hermes engine source pin for the Hermes NAPI backend.
+# Source: microsoft/hermes-windows (ships a mature Node-API impl in
+# API/hermes_node_api + a jsr_* embedding C ABI in API/hermes_shared).
+# Format: first non-comment line is the git commit (or tag) checked out by
+# scripts/setup_hermes.py.
+f9abcf6a2a0ca0a7c36fd263a624a85ae4a51ad3

@@ -13,6 +13,7 @@
 # Setup / patch state markers
 /.setup_stamp
 /patches/v8/.applied
+/patches/hermes/.applied
 
 # Local build logs
 /out_*.log

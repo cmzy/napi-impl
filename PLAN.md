@@ -593,23 +593,37 @@ else:                                    # hermes / jsc / quickjs
 
 **验收：** 所有平台 release 产物自动产出并附在 GitHub Release。
 
-### M7 — Hermes 集成（未来，独立排期）
+### M7 — Hermes 集成
 
 **目标：** 把 `napi_*` 后端接到 Hermes，证明双构建系统设计与 `src/common/` 抽象有效；产物 `libnapi_hermes.so` 与 `libnapi_v8.so` 同 ABI 可互换。
 
+**实现策略（关键决策）：策略 A —— 链接上游 Hermes 自带的 Node-API，不自己手写 `js_native_api`。**
+
+- 源码钉死 `microsoft/hermes-windows`（`HERMES_VERSION`）。其 `API/hermes_node_api/`（`hermesNodeApi` 静态库）直接在 Hermes VM 上实现了完整 `napi_*`；`API/hermes_shared/js_runtime_api.h` 提供 `jsr_*` embedding C ABI。
+- 我们**唯一新写的 C++** 是 embedding 适配层 `src/hermes/napi_hermes_engine.cc`：在 `hermes::vm::Runtime::create` + `hermes::node_api::getOrCreateNodeApiEnvironment` + `openNodeApiScope` 之上实现项目统一的 `napi_create_platform/runtime/env`（+ tick 钩子，见 `include/napi_v8/embedding.h`）。不写 `js_native_api_hermes.cc`。
+- **不使用** Hermes JSI（`API/hermes`）与 Chrome inspector（`API/hermes_shared/inspector`）。后者在非 Windows 上无法编译（`__declspec`、MSVC 版 `std::exception(const char*)`、folly `memrchr` 冲突），且调试不在范围内。
+- 链接关系：Hermes 单独构建（它必须是自己的 CMake root，无法 `add_subdirectory`），我们链接三个预编译静态库 `hermesNodeApi + hermesvm_a + boost_context` 外加系统 ICU —— 见 `cmake/modules/FindHermes.cmake`。
+- 符号收口：复用 `gn/exports/napi_v8.lds`（version script），最终 `libnapi_hermes.so` 仅导出 `napi_*`/`node_api_*`（已验证 131 个，零泄漏）。
+
 **任务清单：**
 
-- [ ] `scripts/setup_hermes.py`：拉取 Hermes 源码或预编译
-- [ ] `cmake/modules/FindHermes.cmake`
-- [ ] `cmake/toolchains/{android,ios,linux,windows}.cmake` 填充
-- [ ] `cmake/napi_flags.cmake` 与 `gn/napi_flags.gni` 镜像
-- [ ] `src/hermes/sources.txt` + `src/hermes/CMakeLists.txt`
-- [ ] `src/hermes/{js_native_api_hermes.cc, napi_hermes_engine.cc, ...}`
-- [ ] `src/common/CMakeLists.txt`（验证 CMake 路径下 common 编译通过）
-- [ ] `scripts/build.py` 启用 CMake 分流分支
-- [ ] 跑 M2 测试集，与 V8 路径对齐通过率
+- [x] `scripts/setup_hermes.py`：clone + patch（`HERMES_VERSION` 钉 commit）
+- [x] `patches/hermes/`：`0001-cmake-lit-ctest-case-insensitive-include.patch`（hermes-windows 的 `include(ctest)` 大小写在 Linux 上失败）
+- [x] `cmake/modules/FindHermes.cmake`（定位预编译归档 + ICU，导出 `Hermes::Hermes`）
+- [x] `cmake/napi_flags.cmake`（visibility hidden + 头文件，镜像 GN 侧意图）
+- [x] 顶层 `CMakeLists.txt` + `src/CMakeLists.txt`（按 `NAPI_ENGINE` 分流）
+- [x] `src/hermes/sources.txt` + `src/hermes/CMakeLists.txt`
+- [x] `src/hermes/napi_hermes_engine.cc`（embedding 适配层）
+- [x] `src/common/CMakeLists.txt`（CMake 路径下 common 编译通过，common 现为空 → INTERFACE）
+- [x] `scripts/build.py` 启用 `--engine=hermes` CMake 分流
+- [x] **M7.1 烟囱测试**：`napi_run_script("1 + 2") == 3`（`test/hermes_smoke.cc`，CTest `hermes_smoke` 通过，Linux x86_64）
+- [ ] **M7.2**：跑 M2 的 `js-native-api` 测试集，与 V8 路径对齐通过率
+- [ ] **M7.3**：`cmake/toolchains/{android,ios,linux,windows}.cmake` 填充 + Android AAR 打包；`scripts/verify_flags_parity.py` 接入
+- [ ] 生成 `napi_hermes.lds`（目前复用 `napi_v8.lds`，其 V8 专属符号在 Hermes 侧缺失，version script 容忍）
 
-**验收：** `python3 scripts/build.py --engine=hermes --platform=android --arch=arm64 --package` 输出 `napi-hermes.aar`，下游 App 切换 `libnapi_v8` ↔ `libnapi_hermes` 无需改源码。
+**已验收（M7.1）：** `python3 scripts/build.py --engine=hermes --platform=linux --arch=x86_64` 产出 `out/build/hermes-linux-x86_64/src/hermes/libnapi_hermes.so`，仅导出 `napi_*`，下游仅用 `napi_*` 即可端到端跑通。
+
+**最终验收（M7.3）：** `python3 scripts/build.py --engine=hermes --platform=android --arch=arm64 --package` 输出 `napi-hermes.aar`，下游 App 切换 `libnapi_v8` ↔ `libnapi_hermes` 无需改源码。
 
 ---
 

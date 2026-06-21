@@ -28,6 +28,7 @@ except ImportError:
 ROOT = Path(__file__).resolve().parent.parent
 THIRD_PARTY = ROOT / "third_party"
 V8_DIR = THIRD_PARTY / "v8"
+HERMES_DIR = THIRD_PARTY / "hermes-windows"
 DEPOT_TOOLS = THIRD_PARTY / "depot_tools"
 
 
@@ -201,6 +202,46 @@ def build_v8_path(platform: str, arch: str, config: str,
 
 
 # ---------------------------------------------------------------------------
+# Hermes engine path (CMake track)
+# ---------------------------------------------------------------------------
+
+def _cmake_build_type(config: str) -> str:
+    return "Debug" if config == "debug" else "Release"
+
+
+def build_hermes_path(platform: str, arch: str, config: str, package: bool):
+    if not (HERMES_DIR / ".git").is_dir():
+        raise SystemExit(
+            "[error] third_party/hermes-windows missing — run scripts/setup_hermes.py first")
+
+    build_type = _cmake_build_type(config)
+    tag = f"hermes-{platform}-{arch}-{config}"
+    hermes_build = ROOT / "out" / "build" / f"hermes-engine-{platform}-{arch}-{config}"
+    lib_build = ROOT / "out" / "build" / tag
+
+    # 1) Build the Hermes engine standalone (it must be its own CMake root; it
+    #    cannot be add_subdirectory'd). We only need the Node-API + VM archives.
+    if not (hermes_build / "build.ninja").exists():
+        run(["cmake", "-S", str(HERMES_DIR), "-B", str(hermes_build), "-G", "Ninja",
+             f"-DCMAKE_BUILD_TYPE={build_type}",
+             "-DHERMES_ENABLE_TOOLS=ON",        # hermesc compiles the baked-in JS
+             "-DHERMES_ENABLE_TEST_SUITE=OFF"])
+    run(["cmake", "--build", str(hermes_build),
+         "--target", "hermesNodeApi", "hermesvm_a"])
+
+    # 2) Build libnapi_hermes against those prebuilt archives.
+    run(["cmake", "-S", str(ROOT), "-B", str(lib_build), "-G", "Ninja",
+         "-DNAPI_ENGINE=hermes",
+         f"-DCMAKE_BUILD_TYPE={build_type}",
+         f"-DHERMES_BUILD_DIR={hermes_build}"])
+    run(["cmake", "--build", str(lib_build)])
+
+    print(f"\n[done] artifacts -> {lib_build / 'src' / 'hermes'}")
+    if package:
+        print("[warn] --package not implemented for hermes yet")
+
+
+# ---------------------------------------------------------------------------
 
 def main():
     ap = argparse.ArgumentParser()
@@ -222,6 +263,8 @@ def main():
     if args.engine == "v8":
         build_v8_path(args.platform, args.arch, args.config,
                       args.gn_arg, args.package)
+    elif args.engine == "hermes":
+        build_hermes_path(args.platform, args.arch, args.config, args.package)
     else:
         raise SystemExit(f"[todo] engine {args.engine} not yet supported (M7)")
 

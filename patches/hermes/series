@@ -1,0 +1,3 @@
+# patches applied in order by scripts/setup_hermes.py
+# format: one filename per line, # for comments
+0001-cmake-lit-ctest-case-insensitive-include.patch
