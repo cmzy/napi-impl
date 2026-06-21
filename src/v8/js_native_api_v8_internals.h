@@ -46,12 +46,21 @@
 // slots 1..2.)
 #define NAPI_PRIVATE_KEY(context, suffix) napi_v8_priv::GetPrivateKey((context), napi_v8_priv::PrivateKeyKind::suffix)
 
+struct napi_env__; // defined in js_native_api_v8.h
+
 namespace napi_v8_priv {
     enum class PrivateKeyKind {
         wrapper = 1,
         type_tag = 2,
     };
     v8::Local<v8::Private> GetPrivateKey(v8::Local<v8::Context> ctx, PrivateKeyKind kind);
+
+    // Optional inspector tick hook. The inspector module (an optional source_set)
+    // sets this when an inspector is active so napi_v8_run_event_loop_tasks() drains
+    // queued CDP messages on the V8 thread each tick. Null when the inspector is not
+    // linked or not started — keeping the engine core free of any inspector
+    // dependency.
+    extern void (*g_inspector_tick_hook)(napi_env__ *env);
 } // namespace napi_v8_priv
 
 namespace v8impl {

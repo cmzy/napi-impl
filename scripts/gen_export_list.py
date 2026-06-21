@@ -34,6 +34,12 @@ EMBEDDING_SYMBOLS = [
     "napi_v8_inspector_start",
     "napi_v8_inspector_stop",
     "napi_v8_inspector_wait_for_connection",
+    # Inspector message loop (host-driven; napi_v8/inspector.h).
+    "napi_v8_inspector_pump_messages",
+    "napi_v8_inspector_is_paused",
+    "napi_v8_inspector_wait",
+    "napi_v8_inspector_set_pause_handler",
+    "napi_v8_inspector_set_wake_handler",
     # Host-driven event-loop tick: pump foreground tasks + drain finalizers
     # (napi_v8/embedding.h).
     "napi_v8_run_event_loop_tasks",

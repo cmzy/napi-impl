@@ -750,18 +750,22 @@ int main(int argc, char** argv) {
     }
   }
 
-  // If the inspector was started, give the CDP client a short tail window so
-  // post-test commands (like the smoke test's Runtime.evaluate) complete
-  // before we tear V8 down.
+  // If the inspector was started, keep pumping for a short tail window so
+  // post-test CDP commands (Runtime.evaluate, breakpoint pause/resume) are
+  // dispatched on this — the V8 — thread before we tear V8 down. This bare
+  // embedding has no event loop, so the host MUST drive the tick;
+  // napi_v8_run_event_loop_tasks() is what drains queued inspector messages.
+  // Production embedders would loop until the client disconnects instead.
   for (int i = 4; i < argc; ++i) {
     if (std::strncmp(argv[i], "--inspect=", 10) == 0) {
-      // Idle 2s.  Cheap and predictable for tests; production embedders
-      // would loop until the client disconnects.
+      for (int ms = 0; ms < 2000; ms += 10) {
+        napi_v8_run_event_loop_tasks(g_env);
 #if defined(_WIN32)
-      ::Sleep(2000);
+        ::Sleep(10);
 #else
-      ::usleep(2 * 1000 * 1000);
+        ::usleep(10 * 1000);
 #endif
+      }
       break;
     }
   }

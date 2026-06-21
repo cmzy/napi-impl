@@ -78,6 +78,7 @@ namespace napi_v8 {
 
         bool InspectorServer::Start(int port, const std::string &context_name) {
             context_name_ = context_name;
+            port_ = port;
             listen_fd_ = ::socket(AF_INET, SOCK_STREAM, 0);
             if (listen_fd_ < 0)
                 return false;
@@ -196,13 +197,16 @@ namespace napi_v8 {
 
             // Route /json/version, /json, and /json/list (very minimal CDP discovery).
             if (state.url == "/json" || state.url == "/json/list") {
+                std::string ws_url = "ws://127.0.0.1:" + std::to_string(port_) + "/napi-v8";
                 std::string body = "[{\"description\":\"napi_v8\","
                                    "\"id\":\"napi-v8\","
                                    "\"title\":\"" +
                                    context_name_ +
                                    "\","
                                    "\"type\":\"node\","
-                                   "\"webSocketDebuggerUrl\":\"ws://127.0.0.1:0/napi-v8\","
+                                   "\"webSocketDebuggerUrl\":\"" +
+                                   ws_url +
+                                   "\","
                                    "\"devtoolsFrontendUrl\":\"\"}]";
                 char hdr[256];
                 int hl = std::snprintf(hdr, sizeof(hdr),

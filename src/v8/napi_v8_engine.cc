@@ -56,6 +56,9 @@ namespace {
 
 namespace napi_v8_priv {
 
+    // Set by the optional inspector module; see js_native_api_v8_internals.h.
+    void (*g_inspector_tick_hook)(napi_env__ *env) = nullptr;
+
     v8::Local<v8::Private> GetPrivateKey(v8::Local<v8::Context> ctx, PrivateKeyKind kind) {
         // V8 14.x removed Context::GetIsolate(); use the active isolate (callers
         // are inside an Isolate::Scope at this point).
@@ -186,6 +189,11 @@ napi_status NAPI_CDECL napi_v8_run_event_loop_tasks(napi_env env) {
         }
     }
     env->DrainFinalizerQueue();
+    //   3. If an inspector is active for this env, drain queued CDP messages and
+    //      dispatch them on this (the V8) thread. No-op when the inspector module
+    //      is not linked or no inspector was started.
+    if (napi_v8_priv::g_inspector_tick_hook != nullptr)
+        napi_v8_priv::g_inspector_tick_hook(env);
     return napi_ok;
 }
 

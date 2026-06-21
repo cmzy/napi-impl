@@ -52,6 +52,7 @@ namespace napi_v8 {
 
             int listen_fd_ = -1;
             int client_fd_ = -1;
+            int port_ = 0; // bound port, echoed in /json discovery
             std::atomic<bool> stop_{false};
             std::atomic<bool> has_client_{false};
             std::string context_name_;
