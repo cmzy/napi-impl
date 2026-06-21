@@ -37,6 +37,19 @@ def list_tests(d: Path):
                   and p.stem.startswith("test"))
 
 
+import re
+# Capture the addon name from require('./build/<buildType>/<name>'); a dir may
+# host several addons (e.g. test_object + test_exceptions), so each test*.js
+# picks its own .so.
+_REQUIRE_RE = re.compile(
+    r"""require\(\s*[`'"]\.{1,2}/build/(?:\$\{[^}]+\}|[^/`'"]+)/([A-Za-z0-9_]+)""")
+
+
+def required_modules(testjs: Path):
+    txt = testjs.read_text(encoding="utf-8", errors="ignore")
+    return list(dict.fromkeys(_REQUIRE_RE.findall(txt)))
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--engine", default="v8", choices=["v8", "hermes"])
@@ -106,12 +119,21 @@ def main():
             continue
         if args.filter and args.filter not in d.name:
             continue
-        so = d / "build" / binding_release_dir(args.platform) / f"{d.name}.so"
-        if not so.exists():
-            skipped.append((d.name, "binding not built"))
-            continue
+        rel = binding_release_dir(args.platform)
         for tjs in list_tests(d):
             tag = f"{d.name}/{tjs.name}"
+            # Resolve which addon this test requires; pick the first built .so.
+            mods = required_modules(tjs) or [d.name]
+            so = module = None
+            for m in mods:
+                cand = d / "build" / rel / f"{m}.so"
+                if cand.exists():
+                    so, module = cand, m
+                    break
+            if so is None:
+                want = "/".join(mods)
+                skipped.append((tag, f"binding not built ({want})"))
+                continue
             if android_dev is not None:
                 # Push binding + test, then adb shell.
                 subprocess.run([adb, "push", str(so), android_dev],
@@ -120,12 +142,12 @@ def main():
                                check=True, capture_output=True)
                 remote = (
                     f"cd {android_dev} && LD_LIBRARY_PATH={android_dev} "
-                    f"./runner {android_dev}/{so.name} {d.name} "
+                    f"./runner {android_dev}/{so.name} {module} "
                     f"{android_dev}/{tjs.name}"
                 )
                 cmd = [adb, "shell", remote]
             else:
-                cmd = [*sim_prefix, str(runner), str(so), d.name, str(tjs)]
+                cmd = [*sim_prefix, str(runner), str(so), module, str(tjs)]
             try:
                 r = subprocess.run(
                     cmd, capture_output=True, text=True,

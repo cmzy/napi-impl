@@ -28,11 +28,38 @@ def lib_dir(platform: str, arch: str, config: str, engine: str = "v8") -> Path:
     return ROOT / "third_party" / "v8" / "out" / f"napi-{platform}-{arch}-{config}"
 
 
-def build_one(feature_dir: Path, libdir: Path, dry_run: bool,
-              platform: str) -> bool:
-    name = feature_dir.name
-    sources = sorted(p for p in feature_dir.iterdir()
-                     if p.suffix in (".c", ".cc"))
+def gyp_targets(feature_dir: Path):
+    """Parse binding.gyp -> [(target_name, [source Paths])].
+
+    Node test dirs can define several addons in one directory (e.g. test_object
+    builds both `test_object` and `test_exceptions`); each is its own .so. gyp
+    files are Python-dict-ish (trailing commas, optional # comments), so strip
+    comments and literal-eval. Returns None to fall back to globbing.
+    """
+    gyp = feature_dir / "binding.gyp"
+    if not gyp.exists():
+        return None
+    text = "\n".join(
+        line for line in gyp.read_text(encoding="utf-8").splitlines()
+        if not line.lstrip().startswith("#"))
+    try:
+        import ast
+        data = ast.literal_eval(text)
+        out = []
+        for t in data.get("targets", []):
+            name = t.get("target_name")
+            srcs = [feature_dir / s for s in t.get("sources", [])
+                    if isinstance(s, str) and s.endswith((".c", ".cc"))]
+            srcs = [s for s in srcs if s.exists()]
+            if name and srcs:
+                out.append((name, sorted(srcs)))
+        return out or None
+    except (ValueError, SyntaxError, TypeError):
+        return None
+
+
+def build_one(name: str, sources, feature_dir: Path, libdir: Path,
+              dry_run: bool, platform: str) -> bool:
     if not sources:
         return False
     # mac uses ./build/Release/ (Node convention so test.js can find it via
@@ -172,10 +199,18 @@ def main():
         if not any(p.suffix in (".c", ".cc") for p in d.iterdir()):
             skipped += 1
             continue
-        if build_one(d, libdir, args.dry_run, args.platform):
-            ok += 1
-        else:
-            fail += 1
+        # One .so per binding.gyp target (a dir may build several addons); fall
+        # back to "all .c -> <dirname>.so" when there is no parseable gyp.
+        targets = gyp_targets(d)
+        if targets is None:
+            targets = [(d.name,
+                        sorted(p for p in d.iterdir()
+                               if p.suffix in (".c", ".cc")))]
+        for name, sources in targets:
+            if build_one(name, sources, d, libdir, args.dry_run, args.platform):
+                ok += 1
+            else:
+                fail += 1
     print(f"\n[summary] built {ok} / {ok + fail}, skipped {skipped}")
     sys.exit(0 if fail == 0 else 1)
 
