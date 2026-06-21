@@ -188,7 +188,31 @@ napi_status NAPI_CDECL napi_create_env(napi_runtime runtime, napi_env *result) {
         hermes::hbc::CompileFlags compileFlags; // defaults (lazy compilation)
         napi_platform plat = runtime->platform;
         std::function<void(napi_env, napi_value)> unhandled =
-                [plat](napi_env /*env*/, napi_value /*error*/) {
+                [plat](napi_env env, napi_value error) {
+                    // An unhandled JS error (e.g. thrown from a napi finalizer)
+                    // reaches here with the exception still pending on the env, so
+                    // we must clear it before we can call back into JS (the value
+                    // is already captured as `error`). Surface it to a host
+                    // dispatcher if installed — globalThis.__emitUncaughtException,
+                    // matching Node's process 'uncaughtException' — else fall back
+                    // to the platform string handler.
+                    if (env != nullptr && error != nullptr) {
+                        napi_value pending = nullptr;
+                        napi_get_and_clear_last_exception(env, &pending);
+                        napi_value global = nullptr, emit = nullptr;
+                        napi_valuetype t = napi_undefined;
+                        if (napi_get_global(env, &global) == napi_ok &&
+                            napi_get_named_property(env, global,
+                                                    "__emitUncaughtException", &emit) == napi_ok &&
+                            napi_typeof(env, emit, &t) == napi_ok && t == napi_function) {
+                            napi_value undef = nullptr, res = nullptr, argv[1] = {error};
+                            napi_get_undefined(env, &undef);
+                            if (napi_call_function(env, undef, emit, 1, argv, &res) == napi_ok)
+                                return;
+                            // The dispatcher itself threw; clear and fall through.
+                            napi_get_and_clear_last_exception(env, &pending);
+                        }
+                    }
                     if (plat != nullptr && plat->err_handler != nullptr)
                         plat->err_handler("Unhandled JavaScript error");
                 };

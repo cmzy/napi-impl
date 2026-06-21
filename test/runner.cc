@@ -317,6 +317,20 @@ globalThis.console = {
   info: globalThis.__console_log,
   debug: globalThis.__console_log,
 };
+// process 'uncaughtException' handlers. The engine surfaces unhandled errors
+// (e.g. thrown from a napi finalizer) by calling globalThis.__emitUncaughtException.
+const __uncaughtHandlers = [];
+globalThis.__emitUncaughtException = function (err) {
+  if (__uncaughtHandlers.length === 0) {
+    // No handler: emulate Node reporting an unhandled finalizer error to stderr
+    // (the suite matches /Error during Finalize/), then keep running so the
+    // caller's GC loop can finish — the process exits normally (no signal).
+    globalThis.__console_error('Error during Finalize: ' +
+      ((err && (err.stack || err.message)) || String(err)));
+    return;
+  }
+  for (const h of __uncaughtHandlers.slice()) h(err);
+};
 globalThis.process = {
   argv: globalThis.__argv || ['runner', 'test'],
   execPath: globalThis.__execPath,
@@ -325,8 +339,16 @@ globalThis.process = {
   version: 'v22.11.0',
   versions: { node: '22.11.0', napi: '10' },
   exit: (code) => { throw new Error('process.exit(' + code + ')'); },
-  on: () => {},
-  removeListener: () => {},
+  on: (event, fn) => {
+    if (event === 'uncaughtException' && typeof fn === 'function')
+      __uncaughtHandlers.push(fn);
+  },
+  removeListener: (event, fn) => {
+    if (event === 'uncaughtException') {
+      const i = __uncaughtHandlers.indexOf(fn);
+      if (i >= 0) __uncaughtHandlers.splice(i, 1);
+    }
+  },
   emitWarning: () => {},
   release: { name: 'node' },
   stdin: null,
