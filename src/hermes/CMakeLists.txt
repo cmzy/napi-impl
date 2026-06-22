@@ -23,10 +23,15 @@ set_target_properties(napi_hermes PROPERTIES OUTPUT_NAME napi_hermes)
 
 target_link_libraries(napi_hermes PRIVATE napi_flags napi_common Hermes::Hermes)
 
-# Export only napi_*; hide all Hermes/VM/ICU/LLVH symbols. The Hermes export
-# list (scripts/gen_export_list.py --engine=hermes) omits the V8-only inspector
-# and SharedArrayBuffer extensions.
-if(NOT APPLE AND NOT MSVC)
+# Export only napi_*; hide all Hermes/VM/ICU/LLVH symbols (notably Hermes' static
+# helper _sh_* symbols, which carry default visibility in the VM archive). The
+# Hermes export list (scripts/gen_export_list.py --engine=hermes) omits the
+# V8-only inspector and SharedArrayBuffer extensions. Each linker takes the list
+# in its own dialect: GNU ld/lld version script, Mach-O exported_symbols_list.
+if(APPLE)
+  target_link_options(napi_hermes PRIVATE
+    "-Wl,-exported_symbols_list,${NAPI_IMPL_ROOT}/gn/exports/napi_hermes.exp")
+elseif(NOT MSVC)
   target_link_options(napi_hermes PRIVATE
     "-Wl,--version-script=${NAPI_IMPL_ROOT}/gn/exports/napi_hermes.lds")
 endif()

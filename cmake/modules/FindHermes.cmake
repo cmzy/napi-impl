@@ -88,6 +88,14 @@ set(_hermes_sys_libs Threads::Threads ${CMAKE_DL_LIBS})
 if(ANDROID)
   list(APPEND _hermes_sys_libs log)
 endif()
+# Apple desktop (macOS): Hermes' platform-unicode backend is PlatformUnicodeCF,
+# which calls CoreFoundation (CFLocale/CFString/CFDateFormatter). iOS builds set
+# HERMES_UNICODE_LITE (no CF refs), so this is only needed where CF is compiled
+# in — but linking the framework is harmless when unreferenced, so add it for any
+# Apple target that pulled CoreFoundation symbols into the VM archive.
+if(APPLE)
+  list(APPEND _hermes_sys_libs "-framework CoreFoundation")
+endif()
 
 find_package_handle_standard_args(Hermes
   REQUIRED_VARS HERMES_NODEAPI_LIB HERMES_VM_LIB HERMES_BOOSTCTX_LIB HERMES_SRC_DIR)
@@ -96,9 +104,21 @@ if(Hermes_FOUND AND NOT TARGET Hermes::Hermes)
   add_library(Hermes::Hermes INTERFACE IMPORTED)
   set_target_properties(Hermes::Hermes PROPERTIES
     INTERFACE_INCLUDE_DIRECTORIES "${HERMES_INCLUDE_DIRS}")
-  # The three archives have cyclic references; wrap them in a rescan group.
+  # The three archives have cyclic references. GNU ld / lld (Linux, Android NDK)
+  # need them wrapped in a --start-group/--end-group rescan block
+  # ($<LINK_GROUP:RESCAN>). Apple's ld64 resolves the whole archive set in a
+  # single pass and does not define the RESCAN link feature (CMake errors:
+  # "Feature 'RESCAN' ... is not supported for the 'CXX' link language"), so on
+  # Apple we list the archives directly — order/cycles don't matter to ld64.
+  if(APPLE)
+    set(_hermes_archive_group
+      ${HERMES_NODEAPI_LIB} ${HERMES_VM_LIB} ${HERMES_BOOSTCTX_LIB})
+  else()
+    set(_hermes_archive_group
+      "$<LINK_GROUP:RESCAN,${HERMES_NODEAPI_LIB},${HERMES_VM_LIB},${HERMES_BOOSTCTX_LIB}>")
+  endif()
   target_link_libraries(Hermes::Hermes INTERFACE
-    "$<LINK_GROUP:RESCAN,${HERMES_NODEAPI_LIB},${HERMES_VM_LIB},${HERMES_BOOSTCTX_LIB}>"
+    ${_hermes_archive_group}
     ${_hermes_icu_libs}
     ${_hermes_sys_libs})
 endif()

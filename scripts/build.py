@@ -296,6 +296,26 @@ def build_hermes_path(platform: str, arch: str, config: str, package: bool):
         lib_cfg = android_common + [
             "-DNAPI_ENGINE=hermes", f"-DCMAKE_BUILD_TYPE={build_type}",
             f"-DHERMES_BUILD_DIR={hermes_build}", "-DNAPI_HERMES_BUILD_TESTS=OFF"]
+    elif platform in ("ios", "ios_sim"):
+        # Same host-hermesc cross mechanism as Android, but with the iOS toolchain
+        # (cmake/toolchains/ios.cmake). 'ios' = device sysroot (arm64 only);
+        # 'ios_sim' = simulator sysroot (arm64 Apple-silicon / x86_64 Intel).
+        icf = _ensure_host_compilers()
+        toolchain = _toolchain_file("ios")
+        ios_platform = "SIMULATOR" if platform == "ios_sim" else "OS"
+        apple_common = [f"-DCMAKE_TOOLCHAIN_FILE={toolchain}",
+                        f"-DIOS_PLATFORM={ios_platform}", f"-DIOS_ARCH={arch}"]
+        # No system ICU on iOS -> UNICODE_LITE; baked-in JS compiled by the host
+        # tools. Apple's compiler id is AppleClang (not Clang), so Boost.Context
+        # auto-selects the mach-o 'gas' asm — no BOOST_CONTEXT_ASSEMBLER override.
+        hermes_cfg = apple_common + [
+            f"-DCMAKE_BUILD_TYPE={build_type}",
+            "-DHERMES_ENABLE_TOOLS=OFF", "-DHERMES_ENABLE_TEST_SUITE=OFF",
+            "-DHERMES_UNICODE_LITE=ON",
+            f"-DIMPORT_HOST_COMPILERS={icf}"]
+        lib_cfg = apple_common + [
+            "-DNAPI_ENGINE=hermes", f"-DCMAKE_BUILD_TYPE={build_type}",
+            f"-DHERMES_BUILD_DIR={hermes_build}", "-DNAPI_HERMES_BUILD_TESTS=OFF"]
     elif platform in _NATIVE_PLATFORMS:
         toolchain = _toolchain_file(platform)
         tc_arg = [f"-DCMAKE_TOOLCHAIN_FILE={toolchain}"] if toolchain else []
