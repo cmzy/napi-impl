@@ -88,6 +88,12 @@ set(_hermes_sys_libs Threads::Threads ${CMAKE_DL_LIBS})
 if(ANDROID)
   list(APPEND _hermes_sys_libs log)
 endif()
+# Windows: hermesvm's SamplingProfilerSampler calls timeBeginPeriod/timeEndPeriod
+# from winmm (lib/VM/CMakeLists.txt links it as a platform lib). A static archive
+# doesn't carry that transitively, so add it for our DLL link.
+if(WIN32)
+  list(APPEND _hermes_sys_libs winmm)
+endif()
 # Apple desktop (macOS): Hermes' platform-unicode backend is PlatformUnicodeCF,
 # which calls CoreFoundation (CFLocale/CFString/CFDateFormatter). iOS builds set
 # HERMES_UNICODE_LITE (no CF refs), so this is only needed where CF is compiled
