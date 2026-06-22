@@ -1,0 +1,35 @@
+diff --git a/API/hermes_node_api/hermes_node_api.cpp b/API/hermes_node_api/hermes_node_api.cpp
+index 5090a606..ba9ccbce 100644
+--- a/API/hermes_node_api/hermes_node_api.cpp
++++ b/API/hermes_node_api/hermes_node_api.cpp
+@@ -1210,6 +1210,9 @@ class NodeApiEnvironment {
+   // The Node-API version requested by the user of Node-API environment.
+   int32_t apiVersion_{NodeApiDefaultVersion};
+ 
++  // Running total of embedder-reported external memory (napi_adjust_external_memory).
++  int64_t externalMemory_{0};
++
+   // Reference to itself for convenient use in macros.
+   napi_env env{napiEnv(this)};
+ 
+@@ -7164,12 +7167,17 @@ napi_status NAPI_CDECL napi_adjust_external_memory(
+     node_api_basic_env basic_env,
+     int64_t change_in_bytes,
+     int64_t *adjusted_value) {
+-  // TODO: Implement napi_adjust_external_memory (check the JSArrayBuffer detach
+-  // as example)
+   napi_env env = const_cast<napi_env>(basic_env);
+   CHECK_STATUS(checkBasicPreconditions(env));
+   CHECK_POSTCONDITIONS(env, /*valueStackDelta:*/ 0);
+-  return GENERIC_FAILURE("Not implemented");
++  CHECK_ARG(adjusted_value);
++  // Hermes manages its own heap and exposes no external-memory pressure hook, so
++  // we just maintain the running total the embedder reports. This satisfies the
++  // Node-API contract (return the new registered external-memory total) without
++  // affecting GC scheduling.
++  env->externalMemory_ += change_in_bytes;
++  *adjusted_value = env->externalMemory_;
++  return env->clearLastNativeError();
+ }
+ 
+ napi_status NAPI_CDECL napi_set_instance_data(

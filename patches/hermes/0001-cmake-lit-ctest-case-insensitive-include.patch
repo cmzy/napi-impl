@@ -1,0 +1,13 @@
+diff --git a/cmake/modules/Lit.cmake b/cmake/modules/Lit.cmake
+index f033b72e..3ae7b1ac 100644
+--- a/cmake/modules/Lit.cmake
++++ b/cmake/modules/Lit.cmake
+@@ -3,7 +3,7 @@
+ # This source code is licensed under the MIT license found in the
+ # LICENSE file in the root directory of this source tree.
+ 
+-include (ctest)
++include (CTest)
+ 
+ set(HERMES_LIT_PATH "${HERMES_TOOLS_OUTPUT_DIR}/hermes-lit")
+ if (CMAKE_HOST_WIN32 AND NOT CYGWIN)

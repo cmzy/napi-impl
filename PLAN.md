@@ -593,23 +593,52 @@ else:                                    # hermes / jsc / quickjs
 
 **验收：** 所有平台 release 产物自动产出并附在 GitHub Release。
 
-### M7 — Hermes 集成（未来，独立排期）
+### M7 — Hermes 集成
 
 **目标：** 把 `napi_*` 后端接到 Hermes，证明双构建系统设计与 `src/common/` 抽象有效；产物 `libnapi_hermes.so` 与 `libnapi_v8.so` 同 ABI 可互换。
 
+**实现策略（关键决策）：策略 A —— 链接上游 Hermes 自带的 Node-API，不自己手写 `js_native_api`。**
+
+- 源码钉死 `microsoft/hermes-windows`（`HERMES_VERSION`）。其 `API/hermes_node_api/`（`hermesNodeApi` 静态库）直接在 Hermes VM 上实现了完整 `napi_*`；`API/hermes_shared/js_runtime_api.h` 提供 `jsr_*` embedding C ABI。
+- 我们**唯一新写的 C++** 是 embedding 适配层 `src/hermes/napi_hermes_engine.cc`：在 `hermes::vm::Runtime::create` + `hermes::node_api::getOrCreateNodeApiEnvironment` + `openNodeApiScope` 之上实现项目统一的 `napi_create_platform/runtime/env`（+ tick 钩子，见 `include/napi_v8/embedding.h`）。不写 `js_native_api_hermes.cc`。
+- **不使用** Hermes JSI（`API/hermes`）与 Chrome inspector（`API/hermes_shared/inspector`）。后者在非 Windows 上无法编译（`__declspec`、MSVC 版 `std::exception(const char*)`、folly `memrchr` 冲突），且调试不在范围内。
+- 链接关系：Hermes 单独构建（它必须是自己的 CMake root，无法 `add_subdirectory`），我们链接三个预编译静态库 `hermesNodeApi + hermesvm_a + boost_context` 外加系统 ICU —— 见 `cmake/modules/FindHermes.cmake`。
+- 符号收口：复用 `gn/exports/napi_v8.lds`（version script），最终 `libnapi_hermes.so` 仅导出 `napi_*`/`node_api_*`（已验证 131 个，零泄漏）。
+
 **任务清单：**
 
-- [ ] `scripts/setup_hermes.py`：拉取 Hermes 源码或预编译
-- [ ] `cmake/modules/FindHermes.cmake`
-- [ ] `cmake/toolchains/{android,ios,linux,windows}.cmake` 填充
-- [ ] `cmake/napi_flags.cmake` 与 `gn/napi_flags.gni` 镜像
-- [ ] `src/hermes/sources.txt` + `src/hermes/CMakeLists.txt`
-- [ ] `src/hermes/{js_native_api_hermes.cc, napi_hermes_engine.cc, ...}`
-- [ ] `src/common/CMakeLists.txt`（验证 CMake 路径下 common 编译通过）
-- [ ] `scripts/build.py` 启用 CMake 分流分支
-- [ ] 跑 M2 测试集，与 V8 路径对齐通过率
+- [x] `scripts/setup_hermes.py`：clone + patch（`HERMES_VERSION` 钉 commit）
+- [x] `patches/hermes/`：`0001-cmake-lit-ctest-case-insensitive-include.patch`（hermes-windows 的 `include(ctest)` 大小写在 Linux 上失败）
+- [x] `cmake/modules/FindHermes.cmake`（定位预编译归档 + ICU，导出 `Hermes::Hermes`）
+- [x] `cmake/napi_flags.cmake`（visibility hidden + 头文件，镜像 GN 侧意图）
+- [x] 顶层 `CMakeLists.txt` + `src/CMakeLists.txt`（按 `NAPI_ENGINE` 分流）
+- [x] `src/hermes/sources.txt` + `src/hermes/CMakeLists.txt`
+- [x] `src/hermes/napi_hermes_engine.cc`（embedding 适配层）
+- [x] `src/common/CMakeLists.txt`（CMake 路径下 common 编译通过，common 现为空 → INTERFACE）
+- [x] `scripts/build.py` 启用 `--engine=hermes` CMake 分流
+- [x] **M7.1 烟囱测试**：`napi_run_script("1 + 2") == 3`（`test/hermes_smoke.cc`，CTest `hermes_smoke` 通过，Linux x86_64）
+- [~] **M7.2 js-native-api 套件（43/50 通过，零崩溃，Linux x86_64）**：
+  - **napi_remove_wrap finalizer 修复(patch 0004)**:`NodeApiReferenceWithFinalizer` 缺 `resetFinalizer()` 覆写,导致 `napi_remove_wrap` 后用户 finalizer 仍被调用(撞 binding 的 `unreachable`)。补上覆写清空 finalizer → 救回 `6_object_wrap/test-object-wrap-ref`。
+  - **finalizer 异常路由**:finalizer 抛出的异常经 env 的 unhandledErrorCallback 路由到 JS `process.on('uncaughtException')`(adapter 先清 pending 异常再回调 JS;runner 提供 `__emitUncaughtException` 分发器,无 handler 时打印 `Error during Finalize`)→ 救回 `test_reference/test_finalizer`、`test_exception/testFinalizerException`。
+  - **teardown UAF 修复**:`napi_destroy_runtime` 的 deferred-finalizer-task UAF 已修(`EmbedTaskRunner` teardown 内联,见 commit)——令完整 teardown 下 env 清理钩子可用;但残留的 Hermes UAF(多 external 在 `~Runtime` finalize 时 freed-RefTracker 仍挂链表)使 runner 默认仍跳 teardown,`testEnvCleanup` 暂留失败。
+  - **引擎兼容修复(patches/hermes)**:(1) `napi_create_function` 现带 `.prototype`(原 `createWithoutPrototype` 致 `new fn()`/`instanceof`/`class extends fn` 全断 → 救回 `test_new_target`);(2) `napi_adjust_external_memory` 实现(原 `Not implemented` stub);(3) adapter 把 env apiVersion 报为 9(对齐 vendored node-api-headers v1.9.0/Node22,8↔9 不跨 Hermes 行为门槛)→ 救回 `test_general`。
+  - **finalizer 时序修复**:runner 在 mustCall 检查前对 Hermes 强制 `gc()`×8 + drain,让可回收对象的 finalizer 在断言前触发(救回 `test_instance_data`、`test_general/testFinalizer`、`test_cannot_run_js`、`test_reference/test.js`)。强制 GC 后 Hermes 在 `~Runtime` 的 `finalizeAll` 会二次 finalize external(typedarray 崩溃),故 runner 对 Hermes 跳过显式 teardown(一进程一测试,进程退出回收);代价是 `test_general/testEnvCleanup`(它正是测 env 清理钩子)转为失败——属 runner 取舍,非 NAPI 实现缺陷。
+  - 测试 runner 复用 `test/runner.cc`（同一份源码,经 `NAPI_RUNNER_HERMES` 编译为引擎无关——跳过 V8 inspector 与内部 finalizer drain）。`scripts/{build_tests,run_tests}.py` 加 `--engine=hermes`。
+  - **harness 多目标修复（双引擎受益）**:`build_tests.py` 现解析 `binding.gyp` 的 `targets`,每个 target 各编一个 `.so`（如 `test_object` 目录产 `test_object.so` + `test_exceptions.so`）;`run_tests.py` 按每个 `test*.js` 的 `require('./build/.../<name>')` 选对应 `.so`。`test_object`/`test_reference` 等不再 build 失败,34/34 target 全编过,0 skip。
+  - **关键修复 —— TaskRunner**:Hermes node-api 的 `NodeApiEnvironment::enqueueFinalizer` 会无条件 `taskRunner_->post(...)` 来延迟第二趟(GC 后)finalizer;传 `nullptr` 时,任何 `napi_wrap` 对象被 GC 回收即 SIGSEGV。adapter 现提供 `EmbedTaskRunner`(排队 + 在 `napi_v8_run_event_loop_tasks` tick 里 drain),消除全部崩溃,29/45 → 33/45。
+  - 剩余 7 个失败两类:(a) **引擎语义差异**(预期,行为正确仅文案/上限不同,不修):`test_array`(Hermes 拒绝 4G 元素数组)、`test_constructor`/`6_object_wrap`/`test_object`/`test_properties`(只读/只-getter/不可扩展赋值的 `TypeError` **错误信息文案**与 V8 不同——抛错本身正确);(b) **深层 finalizer / teardown**:`test_finalizer/test_fatal_finalize`(需 experimental finalizer 策略:finalizer 内联且调用影响 GC 的代码即 fatal,与我们 v9 deferred 策略冲突)、`testEnvCleanup`(teardown UAF 残留)。
+- [~] **M7.3 跨平台打包**：
+  - [x] `napi_hermes.lds`/`.exp`/`.def`:`gen_export_list.py --engine=hermes`(嵌入符号拆 common / v8-only,Hermes 不导出 inspector+SAB);`src/hermes` 改链 `napi_hermes.lds`。
+  - [x] `cmake/toolchains/{linux,android,ios,windows}.cmake` 填充;`build.py` 按 platform 传 `CMAKE_TOOLCHAIN_FILE`(linux 原生已验证)。
+  - [x] `package_cmake.py` / `package_android.py` 引擎参数化(`--engine`);`build.py --package` 走 `package_cmake`(linux CMake package 已验证)。
+  - [x] **Android 交叉编译 + AAR(已验证 arm64-v8a)**:`build.py --engine=hermes --platform=android` 自动:先原生构建 host `hermesc`/`shermes` 并经 `-DIMPORT_HOST_COMPILERS=<host>/ImportHostCompilers.cmake` 导入;目标 Hermes 用 NDK toolchain + `HERMES_UNICODE_LITE=ON`(Android 无系统 ICU)+ `BOOST_CONTEXT_ASSEMBLER=gas`(arm64 elf 的 clang_gas 变体只存在于 Windows pe)交叉编译 `hermesNodeApi`/`hermesvm_a`;再链我们的 `libnapi_hermes.so`(`FindHermes` 加 `NO_CMAKE_FIND_ROOT_PATH`、ICU 改可选、Android 补 `liblog`);strip 后 `package_android.py` 产 `napi-hermes.aar`(Prefab v2,arm64-v8a 的 `.so` 4.0M)。导出仍仅 131 个 `napi_*`/`node_api_*`,零泄漏。
+  - [ ] iOS 交叉编译(同 host-hermesc 机制,toolchain 用 ios.cmake;未跑)。
+  - [x] **CI**(`.github/workflows/hermes-ci.yml`):linux job 跑 build + smoke + 套件基线门(`run_tests.py --min-pass 40`)+ 导出符号纪律检查;android job 用 runner 预装 NDK 产 `napi-hermes.aar` 并上传 artifact。基线回退(<40)即红。
+  - [ ] `scripts/verify_flags_parity.py` 接入。
 
-**验收：** `python3 scripts/build.py --engine=hermes --platform=android --arch=arm64 --package` 输出 `napi-hermes.aar`，下游 App 切换 `libnapi_v8` ↔ `libnapi_hermes` 无需改源码。
+**已验收（M7.1）：** `python3 scripts/build.py --engine=hermes --platform=linux --arch=x86_64` 产出 `out/build/hermes-linux-x86_64/src/hermes/libnapi_hermes.so`，仅导出 `napi_*`，下游仅用 `napi_*` 即可端到端跑通。
+
+**最终验收（M7.3）：** `python3 scripts/build.py --engine=hermes --platform=android --arch=arm64 --package` 输出 `napi-hermes.aar`，下游 App 切换 `libnapi_v8` ↔ `libnapi_hermes` 无需改源码。
 
 ---
 

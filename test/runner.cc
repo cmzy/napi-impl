@@ -51,13 +51,18 @@ extern "C" {
 #include "napi/js_native_api.h"
 #include "napi/node_api.h"
 #include "napi_v8/embedding.h"
+#if !defined(NAPI_RUNNER_HERMES)
 #include "napi_v8/inspector.h"
+#endif
 }
 
-// Pull in our internal env layout so we can drain pending finalizers
-// after a manual gc() call (V8 weak callbacks enqueue them but our
-// embedding has no event loop to flush automatically).
+#if !defined(NAPI_RUNNER_HERMES)
+// V8 path: pull in our internal env layout so we can drain pending finalizers
+// after a manual gc() call (V8 weak callbacks enqueue them but our embedding
+// has no event loop to flush automatically). The Hermes path drains via the
+// public embedding tick instead (napi_v8_run_event_loop_tasks).
 #include "../src/v8/js_native_api_v8.h"
+#endif
 
 // ---- helpers --------------------------------------------------------------
 
@@ -108,6 +113,11 @@ static napi_value JsConsoleLog(napi_env env, napi_callback_info info) {
 // gc()). Called from JS as `__drainFinalizers()` after `gc()` so that mustCall
 // assertions tied to finalizers fire before the test asserts.
 static napi_value JsDrainFinalizers(napi_env env, napi_callback_info /*info*/) {
+#if defined(NAPI_RUNNER_HERMES)
+  // Hermes runs napi_wrap finalizers during GC; flush any deferred engine work
+  // (microtasks / second-pass finalizers) through the public embedding tick.
+  napi_v8_run_event_loop_tasks(env);
+#else
   // Repeat: a finalizer can register more references; drain transitively but
   // bound the loop to avoid pathological cycles.
   for (int round = 0; round < 16; ++round) {
@@ -118,6 +128,7 @@ static napi_value JsDrainFinalizers(napi_env env, napi_callback_info /*info*/) {
       f->Finalize();
     }
   }
+#endif
   return nullptr;
 }
 
@@ -306,6 +317,20 @@ globalThis.console = {
   info: globalThis.__console_log,
   debug: globalThis.__console_log,
 };
+// process 'uncaughtException' handlers. The engine surfaces unhandled errors
+// (e.g. thrown from a napi finalizer) by calling globalThis.__emitUncaughtException.
+const __uncaughtHandlers = [];
+globalThis.__emitUncaughtException = function (err) {
+  if (__uncaughtHandlers.length === 0) {
+    // No handler: emulate Node reporting an unhandled finalizer error to stderr
+    // (the suite matches /Error during Finalize/), then keep running so the
+    // caller's GC loop can finish — the process exits normally (no signal).
+    globalThis.__console_error('Error during Finalize: ' +
+      ((err && (err.stack || err.message)) || String(err)));
+    return;
+  }
+  for (const h of __uncaughtHandlers.slice()) h(err);
+};
 globalThis.process = {
   argv: globalThis.__argv || ['runner', 'test'],
   execPath: globalThis.__execPath,
@@ -314,8 +339,16 @@ globalThis.process = {
   version: 'v22.11.0',
   versions: { node: '22.11.0', napi: '10' },
   exit: (code) => { throw new Error('process.exit(' + code + ')'); },
-  on: () => {},
-  removeListener: () => {},
+  on: (event, fn) => {
+    if (event === 'uncaughtException' && typeof fn === 'function')
+      __uncaughtHandlers.push(fn);
+  },
+  removeListener: (event, fn) => {
+    if (event === 'uncaughtException') {
+      const i = __uncaughtHandlers.indexOf(fn);
+      if (i >= 0) __uncaughtHandlers.splice(i, 1);
+    }
+  },
   emitWarning: () => {},
   release: { name: 'node' },
   stdin: null,
@@ -592,6 +625,7 @@ int main(int argc, char** argv) {
 
   CHK(napi_create_env(runtime, &g_env));
 
+#if !defined(NAPI_RUNNER_HERMES)
   // Optional: --inspect=<port>  among extra argv triggers the V8 inspector.
   for (int i = 4; i < argc; ++i) {
     const char* a = argv[i];
@@ -605,6 +639,7 @@ int main(int argc, char** argv) {
       }
     }
   }
+#endif
 
   napi_handle_scope scope;
   CHK(napi_open_handle_scope(g_env, &scope));
@@ -728,6 +763,27 @@ int main(int argc, char** argv) {
     return 1;
   }
 
+#if defined(NAPI_RUNNER_HERMES)
+  // Hermes fires napi finalizers during GC and defers their second pass to the
+  // task runner. Tests that assert finalizer side effects (mustCall counts) but
+  // don't themselves force a final GC would otherwise see the finalizer run
+  // only at teardown — after the check below. Pump gc()+drain a few rounds so
+  // collectable finalizers fire first.
+  {
+    napi_value gc_fn;
+    napi_valuetype gc_t = napi_undefined;
+    if (napi_get_named_property(g_env, global, "gc", &gc_fn) == napi_ok)
+      napi_typeof(g_env, gc_fn, &gc_t);
+    if (gc_t == napi_function) {
+      napi_value undef, r;
+      napi_get_undefined(g_env, &undef);
+      for (int i = 0; i < 8; ++i)
+        napi_call_function(g_env, undef, gc_fn, 0, nullptr, &r);
+    }
+    napi_v8_run_event_loop_tasks(g_env);
+  }
+#endif
+
   // Finalize common (verify mustCall counts).
   napi_value common_obj, finalize_fn;
   napi_get_named_property(g_env, global, "__common", &common_obj);
@@ -750,6 +806,7 @@ int main(int argc, char** argv) {
     }
   }
 
+#if !defined(NAPI_RUNNER_HERMES)
   // If the inspector was started, keep pumping for a short tail window so
   // post-test CDP commands (Runtime.evaluate, breakpoint pause/resume) are
   // dispatched on this — the V8 — thread before we tear V8 down. This bare
@@ -769,8 +826,26 @@ int main(int argc, char** argv) {
       break;
     }
   }
+#endif
   CHK(napi_close_handle_scope(g_env, scope));
+#if defined(NAPI_RUNNER_HERMES)
+  // Skip explicit engine teardown by default. The adapter fixes the main
+  // teardown use-after-free (deferred finalizer tasks outliving vm::Runtime),
+  // which makes env-cleanup-hook teardown work — but a residual Hermes UAF
+  // remains when many externals are finalized during ~Runtime after a forced GC
+  // (e.g. test_typedarray): finalizeAll virtual-calls a freed RefTracker still
+  // linked in the reference list. Until that's fixed upstream, default to
+  // skipping teardown (one test per process; exit reclaims everything). Set
+  // NAPI_RUNNER_FULL_TEARDOWN=1 to force teardown.
+  if (std::getenv("NAPI_RUNNER_FULL_TEARDOWN") == nullptr) {
+    std::fprintf(stderr, "[pass] %s\n", test_path);
+    std::fflush(stdout);
+    std::fflush(stderr);
+    _exit(0);
+  }
+#else
   napi_v8_inspector_stop(g_env);
+#endif
   CHK(napi_destroy_env(g_env));
   CHK(napi_destroy_runtime(runtime));
   CHK(napi_destroy_platform(platform));

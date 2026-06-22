@@ -18,7 +18,10 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 TESTS = ROOT / "test" / "js-native-api"
 
-def runner_bin(platform: str, arch: str, config: str) -> Path:
+def runner_bin(platform: str, arch: str, config: str, engine: str = "v8") -> Path:
+    if engine == "hermes":
+        return (ROOT / "out" / "build"
+                / f"hermes-{platform}-{arch}-{config}" / "src" / "hermes" / "runner")
     return (ROOT / "third_party" / "v8" / "out"
             / f"napi-{platform}-{arch}-{config}" / "runner")
 
@@ -34,8 +37,22 @@ def list_tests(d: Path):
                   and p.stem.startswith("test"))
 
 
+import re
+# Capture the addon name from require('./build/<buildType>/<name>'); a dir may
+# host several addons (e.g. test_object + test_exceptions), so each test*.js
+# picks its own .so.
+_REQUIRE_RE = re.compile(
+    r"""require\(\s*[`'"]\.{1,2}/build/(?:\$\{[^}]+\}|[^/`'"]+)/([A-Za-z0-9_]+)""")
+
+
+def required_modules(testjs: Path):
+    txt = testjs.read_text(encoding="utf-8", errors="ignore")
+    return list(dict.fromkeys(_REQUIRE_RE.findall(txt)))
+
+
 def main():
     ap = argparse.ArgumentParser()
+    ap.add_argument("--engine", default="v8", choices=["v8", "hermes"])
     ap.add_argument("--platform", default="mac")
     ap.add_argument("--arch", default="x86_64")
     ap.add_argument("--config", default="release")
@@ -44,9 +61,12 @@ def main():
     ap.add_argument("--verbose", action="store_true")
     ap.add_argument("--keep-going", action="store_true",
                     help="report all failures instead of stopping at first")
+    ap.add_argument("--min-pass", type=int, default=None,
+                    help="baseline gate: exit 0 if at least N tests pass "
+                         "(tolerates known engine divergences), else exit 1")
     args = ap.parse_args()
 
-    runner = runner_bin(args.platform, args.arch, args.config)
+    runner = runner_bin(args.platform, args.arch, args.config, args.engine)
     if not runner.exists():
         sys.exit(f"runner not built: {runner}")
 
@@ -102,12 +122,21 @@ def main():
             continue
         if args.filter and args.filter not in d.name:
             continue
-        so = d / "build" / binding_release_dir(args.platform) / f"{d.name}.so"
-        if not so.exists():
-            skipped.append((d.name, "binding not built"))
-            continue
+        rel = binding_release_dir(args.platform)
         for tjs in list_tests(d):
             tag = f"{d.name}/{tjs.name}"
+            # Resolve which addon this test requires; pick the first built .so.
+            mods = required_modules(tjs) or [d.name]
+            so = module = None
+            for m in mods:
+                cand = d / "build" / rel / f"{m}.so"
+                if cand.exists():
+                    so, module = cand, m
+                    break
+            if so is None:
+                want = "/".join(mods)
+                skipped.append((tag, f"binding not built ({want})"))
+                continue
             if android_dev is not None:
                 # Push binding + test, then adb shell.
                 subprocess.run([adb, "push", str(so), android_dev],
@@ -116,12 +145,12 @@ def main():
                                check=True, capture_output=True)
                 remote = (
                     f"cd {android_dev} && LD_LIBRARY_PATH={android_dev} "
-                    f"./runner {android_dev}/{so.name} {d.name} "
+                    f"./runner {android_dev}/{so.name} {module} "
                     f"{android_dev}/{tjs.name}"
                 )
                 cmd = [adb, "shell", remote]
             else:
-                cmd = [*sim_prefix, str(runner), str(so), d.name, str(tjs)]
+                cmd = [*sim_prefix, str(runner), str(so), module, str(tjs)]
             try:
                 r = subprocess.run(
                     cmd, capture_output=True, text=True,
@@ -156,6 +185,11 @@ def main():
         print("\nfailures:")
         for t, m in failed[:20]:
             print(f"  {t}  --  {m}")
+    if args.min_pass is not None:
+        ok = len(passed) >= args.min_pass
+        print(f"\n[baseline] passed {len(passed)} (min {args.min_pass}) -> "
+              f"{'OK' if ok else 'REGRESSION'}")
+        sys.exit(0 if ok else 1)
     sys.exit(0 if not failed else 1)
 
 

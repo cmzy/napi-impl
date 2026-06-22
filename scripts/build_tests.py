@@ -20,16 +20,46 @@ ROOT = Path(__file__).resolve().parent.parent
 TESTS = ROOT / "test" / "js-native-api"
 INCLUDE_NAPI = ROOT / "include"
 
-# Path to libNapiV8.dylib (mac arm64/x86_64 build dir, matching build.py).
-def lib_dir(platform: str, arch: str, config: str) -> Path:
+# Directory holding the engine's napi library (matching scripts/build.py output).
+def lib_dir(platform: str, arch: str, config: str, engine: str = "v8") -> Path:
+    if engine == "hermes":
+        return (ROOT / "out" / "build"
+                / f"hermes-{platform}-{arch}-{config}" / "src" / "hermes")
     return ROOT / "third_party" / "v8" / "out" / f"napi-{platform}-{arch}-{config}"
 
 
-def build_one(feature_dir: Path, libdir: Path, dry_run: bool,
-              platform: str) -> bool:
-    name = feature_dir.name
-    sources = sorted(p for p in feature_dir.iterdir()
-                     if p.suffix in (".c", ".cc"))
+def gyp_targets(feature_dir: Path):
+    """Parse binding.gyp -> [(target_name, [source Paths])].
+
+    Node test dirs can define several addons in one directory (e.g. test_object
+    builds both `test_object` and `test_exceptions`); each is its own .so. gyp
+    files are Python-dict-ish (trailing commas, optional # comments), so strip
+    comments and literal-eval. Returns None to fall back to globbing.
+    """
+    gyp = feature_dir / "binding.gyp"
+    if not gyp.exists():
+        return None
+    text = "\n".join(
+        line for line in gyp.read_text(encoding="utf-8").splitlines()
+        if not line.lstrip().startswith("#"))
+    try:
+        import ast
+        data = ast.literal_eval(text)
+        out = []
+        for t in data.get("targets", []):
+            name = t.get("target_name")
+            srcs = [feature_dir / s for s in t.get("sources", [])
+                    if isinstance(s, str) and s.endswith((".c", ".cc"))]
+            srcs = [s for s in srcs if s.exists()]
+            if name and srcs:
+                out.append((name, sorted(srcs)))
+        return out or None
+    except (ValueError, SyntaxError, TypeError):
+        return None
+
+
+def build_one(name: str, sources, feature_dir: Path, libdir: Path,
+              dry_run: bool, platform: str) -> bool:
     if not sources:
         return False
     # mac uses ./build/Release/ (Node convention so test.js can find it via
@@ -93,7 +123,12 @@ def build_one(feature_dir: Path, libdir: Path, dry_run: bool,
                 cxx = str(tc / f"aarch64-linux-android{api}-clang++")
         extra_flags = ["-fPIC"]
 
-    lib_link_name = "napi_v8" if (libdir / "libnapi_v8.so").exists() else "NapiV8"
+    if (libdir / "libnapi_hermes.so").exists():
+        lib_link_name = "napi_hermes"
+    elif (libdir / "libnapi_v8.so").exists():
+        lib_link_name = "napi_v8"
+    else:
+        lib_link_name = "NapiV8"
     cmd = [
         cxx,
         "-shared", "-fPIC", "-fvisibility=hidden",
@@ -137,6 +172,7 @@ def build_one(feature_dir: Path, libdir: Path, dry_run: bool,
 
 def main():
     ap = argparse.ArgumentParser()
+    ap.add_argument("--engine", default="v8", choices=["v8", "hermes"])
     ap.add_argument("--platform", default="mac")
     ap.add_argument("--arch", default="x86_64")
     ap.add_argument("--config", default="release")
@@ -144,8 +180,9 @@ def main():
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args()
 
-    libdir = lib_dir(args.platform, args.arch, args.config)
-    lib_names = ("libNapiV8.dylib", "libnapi_v8.so", "napi_v8.dll")
+    libdir = lib_dir(args.platform, args.arch, args.config, args.engine)
+    lib_names = ("libNapiV8.dylib", "libnapi_v8.so", "napi_v8.dll",
+                 "libnapi_hermes.so")
     if not any((libdir / n).exists() for n in lib_names):
         sys.exit(f"napi library not found in {libdir} — run scripts/build.py first")
 
@@ -162,10 +199,18 @@ def main():
         if not any(p.suffix in (".c", ".cc") for p in d.iterdir()):
             skipped += 1
             continue
-        if build_one(d, libdir, args.dry_run, args.platform):
-            ok += 1
-        else:
-            fail += 1
+        # One .so per binding.gyp target (a dir may build several addons); fall
+        # back to "all .c -> <dirname>.so" when there is no parseable gyp.
+        targets = gyp_targets(d)
+        if targets is None:
+            targets = [(d.name,
+                        sorted(p for p in d.iterdir()
+                               if p.suffix in (".c", ".cc")))]
+        for name, sources in targets:
+            if build_one(name, sources, d, libdir, args.dry_run, args.platform):
+                ok += 1
+            else:
+                fail += 1
     print(f"\n[summary] built {ok} / {ok + fail}, skipped {skipped}")
     sys.exit(0 if fail == 0 else 1)
 

@@ -13,10 +13,14 @@
 # Setup / patch state markers
 /.setup_stamp
 /patches/v8/.applied
+/patches/hermes/.applied
 
 # Local build logs
 /out_*.log
 /*.log
+
+# Python bytecode cache
+__pycache__/
 
 # Editor / OS noise
 .DS_Store
