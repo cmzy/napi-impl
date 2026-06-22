@@ -122,4 +122,15 @@ if(Hermes_FOUND AND NOT TARGET Hermes::Hermes)
     ${_hermes_archive_group}
     ${_hermes_icu_libs}
     ${_hermes_sys_libs})
+
+  # Hermes' public headers (e.g. Support/OSCompat.h) select Windows code paths on
+  # _WINDOWS/WIN32. Hermes' own build defines these, but does not export them to
+  # header consumers; CMake's MSVC platform would supply them, but we build with
+  # the GNU clang driver (MSVC is false), so define them for anything that
+  # includes Hermes headers (napi_hermes, hermes_smoke). Otherwise OSCompat.h
+  # falls through to #include <unistd.h>, which does not exist on Windows.
+  if(WIN32)
+    set_property(TARGET Hermes::Hermes APPEND PROPERTY
+      INTERFACE_COMPILE_DEFINITIONS WIN32 _WINDOWS)
+  endif()
 endif()
