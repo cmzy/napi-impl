@@ -27,11 +27,18 @@ target_link_libraries(napi_hermes PRIVATE napi_flags napi_common Hermes::Hermes)
 # helper _sh_* symbols, which carry default visibility in the VM archive). The
 # Hermes export list (scripts/gen_export_list.py --engine=hermes) omits the
 # V8-only inspector and SharedArrayBuffer extensions. Each linker takes the list
-# in its own dialect: GNU ld/lld version script, Mach-O exported_symbols_list.
+# in its own dialect: GNU ld/lld version script, Mach-O exported_symbols_list,
+# MSVC module-definition (.def).
 if(APPLE)
   target_link_options(napi_hermes PRIVATE
     "-Wl,-exported_symbols_list,${NAPI_IMPL_ROOT}/gn/exports/napi_hermes.exp")
-elseif(NOT MSVC)
+elseif(MSVC)
+  # The .def both names the exported napi_* surface and drives generation of the
+  # import lib (napi_hermes.lib). Without it the DLL exports nothing — we never
+  # mark symbols with __declspec(dllexport).
+  target_link_options(napi_hermes PRIVATE
+    "/DEF:${NAPI_IMPL_ROOT}/gn/exports/napi_hermes.def")
+else()
   target_link_options(napi_hermes PRIVATE
     "-Wl,--version-script=${NAPI_IMPL_ROOT}/gn/exports/napi_hermes.lds")
 endif()
@@ -48,7 +55,12 @@ if(NAPI_HERMES_BUILD_TESTS)
   # The js-native-api host runner — same source as the V8 path (test/runner.cc),
   # built engine-agnostic via NAPI_RUNNER_HERMES (skips V8 inspector + internal
   # finalizer drain). scripts/run_tests.py --engine=hermes drives it.
-  add_executable(runner ${NAPI_IMPL_ROOT}/test/runner.cc)
-  target_compile_definitions(runner PRIVATE NAPI_RUNNER_HERMES)
-  target_link_libraries(runner PRIVATE napi_flags napi_hermes ${CMAKE_DL_LIBS})
+  # POSIX-only: it spawns child processes via pipe()/fork(), so it does not build
+  # under MSVC. The Windows package needs only the library + the portable smoke
+  # test; the suite runs on the Linux/macOS jobs.
+  if(NOT WIN32)
+    add_executable(runner ${NAPI_IMPL_ROOT}/test/runner.cc)
+    target_compile_definitions(runner PRIVATE NAPI_RUNNER_HERMES)
+    target_link_libraries(runner PRIVATE napi_flags napi_hermes ${CMAKE_DL_LIBS})
+  endif()
 endif()

@@ -1,0 +1,320 @@
+name: Hermes NAPI CI
+
+# Locks the Hermes backend and produces the full-platform package set. Each job
+# builds libnapi_hermes, runs the smoke test (where the host can execute it),
+# checks symbol-export discipline, and uploads the platform's package(s):
+#
+#   linux   x86_64  -> CMake .tar.gz
+#   android arm64   -> AAR (Prefab) + CMake .tar.gz
+#   macOS   arm64   -> NapiHermes.framework + CMake .tar.gz
+#   iOS     arm64   -> NapiHermes.framework (device) + CMake .tar.gz
+#   windows x64     -> CMake .zip
+#
+# The linux/android jobs are the validated baseline; macOS/iOS/windows mirror
+# their shape on the matching runners (Apple needs Xcode, Windows needs MSVC —
+# neither cross-builds from Linux).
+#
+# A push to main (or manual workflow_dispatch) runs the full set and uploads the
+# per-platform packages as run artifacts — that is the prebuilt-package build.
+
+on:
+  push:
+    branches: [main, 'worktree-hermes-napi']
+    paths:
+      - 'src/hermes/**'
+      - 'cmake/**'
+      - 'scripts/**'
+      - 'patches/hermes/**'
+      - 'gn/exports/**'
+      - 'HERMES_VERSION'
+      - 'CMakeLists.txt'
+      - 'test/runner.cc'
+      - 'test/hermes_smoke.cc'
+      - '.github/workflows/hermes-ci.yml'
+  pull_request:
+  workflow_dispatch:
+
+# Baseline: see PLAN.md M7.2. Bump when the suite improves.
+env:
+  HERMES_MIN_PASS: '43'
+
+jobs:
+  linux:
+    name: linux x86_64 — suite baseline + cmake
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12' }
+
+      - name: Install build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build clang libicu-dev
+          python3 -m pip install --upgrade pyyaml
+
+      # Pin-keyed cache of the Hermes checkout to skip re-cloning on every run.
+      - name: Cache Hermes source
+        uses: actions/cache@v4
+        with:
+          path: third_party/hermes-windows
+          key: hermes-src-${{ hashFiles('HERMES_VERSION', 'patches/hermes/**') }}
+
+      - name: Setup Hermes (clone + patch)
+        run: python3 scripts/setup_hermes.py
+
+      - name: Build libnapi_hermes
+        run: python3 scripts/build.py --engine=hermes --platform=linux --arch=x86_64
+
+      - name: Smoke test (napi_run_script("1 + 2") == 3)
+        run: ctest --test-dir out/build/hermes-linux-x86_64-release -R hermes_smoke --output-on-failure
+
+      - name: Export discipline (only napi_*/node_api_)
+        run: |
+          SO=out/build/hermes-linux-x86_64-release/src/hermes/libnapi_hermes.so
+          LEAKS=$(nm -D --defined-only "$SO" | grep -E ' [TW] ' | grep -vcE ' (napi_|node_api_)' || true)
+          echo "non-napi exported symbols: $LEAKS"
+          test "$LEAKS" -eq 0
+
+      - name: Sync js-native-api suite
+        run: python3 scripts/sync_napi_tests.py
+
+      - name: Build test bindings
+        run: python3 scripts/build_tests.py --engine=hermes --platform=linux --arch=x86_64
+
+      - name: Run suite (baseline gate)
+        run: |
+          python3 scripts/run_tests.py --engine=hermes --platform=linux --arch=x86_64 \
+            --keep-going --min-pass "${HERMES_MIN_PASS}"
+
+      - name: Package CMake (linux x86_64)
+        run: python3 scripts/package_cmake.py --engine hermes --platform linux --arch x86_64
+
+      - name: Upload CMake package
+        uses: actions/upload-artifact@v4
+        with:
+          name: napi-hermes-linux-x86_64
+          path: out/dist/napi-hermes-linux-x86_64.tar.gz
+
+  android:
+    name: android arm64 — AAR + cmake
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12' }
+
+      - name: Install build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build clang libicu-dev
+          python3 -m pip install --upgrade pyyaml
+
+      - name: Cache Hermes source
+        uses: actions/cache@v4
+        with:
+          path: third_party/hermes-windows
+          key: hermes-src-${{ hashFiles('HERMES_VERSION', 'patches/hermes/**') }}
+
+      - name: Setup Hermes (clone + patch)
+        run: python3 scripts/setup_hermes.py
+
+      - name: Build AAR (uses the runner's pre-installed NDK)
+        env:
+          ANDROID_NDK_ROOT: ${{ env.ANDROID_NDK_LATEST_HOME }}
+        run: python3 scripts/build.py --engine=hermes --platform=android --arch=arm64 --package
+
+      - name: Verify AAR + export discipline
+        env:
+          ANDROID_NDK_ROOT: ${{ env.ANDROID_NDK_LATEST_HOME }}
+        run: |
+          test -f out/dist/napi-hermes.aar
+          unzip -l out/dist/napi-hermes.aar | grep -q 'jni/arm64-v8a/libnapi_hermes.so'
+          SO=out/build/hermes-android-arm64-release/src/hermes/libnapi_hermes.so
+          NM="${ANDROID_NDK_ROOT}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-nm"
+          LEAKS=$("$NM" -D --defined-only "$SO" | grep -E ' [TW] ' | grep -vcE ' (napi_|node_api_)' || true)
+          echo "non-napi exported symbols: $LEAKS"
+          test "$LEAKS" -eq 0
+
+      - name: Package CMake (android arm64)
+        run: python3 scripts/package_cmake.py --engine hermes --platform android --arch arm64
+
+      - name: Upload AAR
+        uses: actions/upload-artifact@v4
+        with:
+          name: napi-hermes-aar
+          path: out/dist/napi-hermes.aar
+
+      - name: Upload CMake package
+        uses: actions/upload-artifact@v4
+        with:
+          name: napi-hermes-android-arm64
+          path: out/dist/napi-hermes-android-arm64.tar.gz
+
+  macos:
+    name: macOS arm64 — framework + cmake
+    runs-on: macos-15
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12' }
+
+      - name: Install build deps
+        run: |
+          brew install ninja
+          python3 -m pip install --upgrade pyyaml
+
+      - name: Cache Hermes source
+        uses: actions/cache@v4
+        with:
+          path: third_party/hermes-windows
+          key: hermes-src-${{ hashFiles('HERMES_VERSION', 'patches/hermes/**') }}
+
+      - name: Setup Hermes (clone + patch)
+        run: python3 scripts/setup_hermes.py
+
+      - name: Build libnapi_hermes (mac arm64)
+        run: python3 scripts/build.py --engine=hermes --platform=mac --arch=arm64
+
+      - name: Smoke test (napi_run_script("1 + 2") == 3)
+        run: ctest --test-dir out/build/hermes-mac-arm64-release -R hermes_smoke --output-on-failure
+
+      - name: Export discipline (napi_* surface present)
+        run: |
+          DYLIB=out/build/hermes-mac-arm64-release/src/hermes/libnapi_hermes.dylib
+          # -exported_symbols_list guarantees the dynamic export table is exactly
+          # the napi_* set by construction, so assert that surface is present
+          # (-g globals; awk type-letter filter drops undefined 'U' entries).
+          NAPI=$(nm -g "$DYLIB" | awk '$2 ~ /^[A-TV-Z]$/ {print $3}' \
+                 | grep -cE '^_(napi_|node_api_)')
+          echo "napi exports: $NAPI"
+          test "$NAPI" -ge 100
+
+      - name: Package CMake (mac arm64)
+        run: python3 scripts/package_cmake.py --engine hermes --platform mac --arch arm64
+
+      - name: Assemble macOS framework
+        run: python3 scripts/package_apple.py --engine hermes --target macos
+
+      - name: Upload CMake package
+        uses: actions/upload-artifact@v4
+        with:
+          name: napi-hermes-mac-arm64
+          path: out/dist/napi-hermes-mac-arm64.tar.gz
+
+      - name: Upload framework
+        uses: actions/upload-artifact@v4
+        with:
+          name: NapiHermes-macos.framework
+          path: out/dist/NapiHermes-macos.framework
+
+  ios:
+    name: iOS arm64 — framework + cmake (device)
+    runs-on: macos-15
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12' }
+
+      - name: Install build deps
+        run: |
+          brew install ninja
+          python3 -m pip install --upgrade pyyaml
+
+      - name: Cache Hermes source
+        uses: actions/cache@v4
+        with:
+          path: third_party/hermes-windows
+          key: hermes-src-${{ hashFiles('HERMES_VERSION', 'patches/hermes/**') }}
+
+      - name: Setup Hermes (clone + patch)
+        run: python3 scripts/setup_hermes.py
+
+      - name: Build libnapi_hermes (ios device arm64)
+        run: python3 scripts/build.py --engine=hermes --platform=ios --arch=arm64
+
+      - name: Export discipline (napi_* surface present)
+        run: |
+          DYLIB=out/build/hermes-ios-arm64-release/src/hermes/libnapi_hermes.dylib
+          NAPI=$(nm -g "$DYLIB" | awk '$2 ~ /^[A-TV-Z]$/ {print $3}' \
+                 | grep -cE '^_(napi_|node_api_)')
+          echo "napi exports: $NAPI"
+          test "$NAPI" -ge 100
+
+      - name: Package CMake (ios arm64 device)
+        run: python3 scripts/package_cmake.py --engine hermes --platform ios --arch arm64
+
+      - name: Assemble iOS framework (device)
+        run: python3 scripts/package_apple.py --engine hermes --target ios
+
+      - name: Upload CMake package
+        uses: actions/upload-artifact@v4
+        with:
+          name: napi-hermes-ios-arm64
+          path: out/dist/napi-hermes-ios-arm64.tar.gz
+
+      - name: Upload framework
+        uses: actions/upload-artifact@v4
+        with:
+          name: NapiHermes-ios.framework
+          path: out/dist/NapiHermes-ios.framework
+
+  windows:
+    name: windows x64 — cmake
+    runs-on: windows-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12' }
+
+      - name: Set up MSVC dev environment
+        uses: ilammy/msvc-dev-cmd@v1
+        with: { arch: x64 }
+
+      - name: Install build deps
+        run: |
+          choco install ninja -y
+          python -m pip install --upgrade pyyaml
+
+      - name: Cache Hermes source
+        uses: actions/cache@v4
+        with:
+          path: third_party/hermes-windows
+          key: hermes-src-${{ hashFiles('HERMES_VERSION', 'patches/hermes/**') }}
+
+      - name: Setup Hermes (clone + patch)
+        run: python scripts/setup_hermes.py
+
+      - name: Build libnapi_hermes (windows x64)
+        run: python scripts/build.py --engine=hermes --platform=windows --arch=x64
+
+      - name: Smoke test (napi_run_script("1 + 2") == 3)
+        run: ctest --test-dir out/build/hermes-windows-x64-release -R hermes_smoke --output-on-failure
+
+      - name: Export discipline (napi_* surface present)
+        shell: pwsh
+        run: |
+          $dll = "out/build/hermes-windows-x64-release/src/hermes/napi_hermes.dll"
+          if (!(Test-Path $dll)) { throw "missing $dll" }
+          $napi = (dumpbin /exports $dll | Select-String -Pattern '\bnapi_\w+|\bnode_api_\w+').Count
+          Write-Host "napi exports: $napi"
+          if ($napi -lt 100) { throw "too few napi exports ($napi)" }
+
+      - name: Package CMake (windows x64)
+        run: python scripts/package_cmake.py --engine hermes --platform windows --arch x64
+
+      - name: Upload CMake package
+        uses: actions/upload-artifact@v4
+        with:
+          name: napi-hermes-windows-x64
+          path: out/dist/napi-hermes-windows-x64.zip
