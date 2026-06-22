@@ -24,4 +24,10 @@ if(NOT DEFINED CMAKE_CXX_COMPILER)
 endif()
 
 set(CMAKE_SYSTEM_VERSION 10.0 CACHE STRING "")
-set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreadedDLL" CACHE STRING "")
+
+# Static CRT (/MT), matching the Hermes engine — HermesWindows.cmake forces
+# CMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded, and its archives embed a static-CRT
+# RuntimeLibrary directive. Linking our /MD object against them trips lld-link's
+# /failifmismatch ("MD_DynamicRelease" vs "MT_StaticRelease"). Same genex as
+# Hermes so Debug picks MultiThreadedDebug.
+set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>" CACHE STRING "")
