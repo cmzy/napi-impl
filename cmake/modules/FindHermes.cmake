@@ -106,11 +106,12 @@ if(Hermes_FOUND AND NOT TARGET Hermes::Hermes)
     INTERFACE_INCLUDE_DIRECTORIES "${HERMES_INCLUDE_DIRS}")
   # The three archives have cyclic references. GNU ld / lld (Linux, Android NDK)
   # need them wrapped in a --start-group/--end-group rescan block
-  # ($<LINK_GROUP:RESCAN>). Apple's ld64 resolves the whole archive set in a
-  # single pass and does not define the RESCAN link feature (CMake errors:
-  # "Feature 'RESCAN' ... is not supported for the 'CXX' link language"), so on
-  # Apple we list the archives directly — order/cycles don't matter to ld64.
-  if(APPLE)
+  # ($<LINK_GROUP:RESCAN>). Apple's ld64 and the Windows PE linkers
+  # (link.exe / lld-link) resolve the whole archive set without a group and do
+  # not define the RESCAN link feature (CMake errors: "Feature 'RESCAN' ... is
+  # not supported for the 'CXX' link language"), so there we list the archives
+  # directly — order/cycles don't matter to those linkers.
+  if(APPLE OR WIN32)
     set(_hermes_archive_group
       ${HERMES_NODEAPI_LIB} ${HERMES_VM_LIB} ${HERMES_BOOSTCTX_LIB})
   else()
