@@ -1,28 +1,27 @@
 # Windows (x64) toolchain.
 #
-# Builds with clang-cl, NOT MSVC cl.exe. microsoft/hermes-windows' VM contains
-# Clang-only constructs — StaticH.cpp's raw longjmp uses __attribute__((naked))
-# + GNU __asm__ (its preset is "base-ninja-clang"), which cl.exe cannot parse
-# (error C2065: 'naked'). clang-cl is Clang in MSVC-compatible mode: it keeps the
-# MSVC ABI and CMake's MSVC=TRUE (so the napi_hermes /DEF export wiring still
-# fires) while accepting the GNU asm. Pins policy too:
-#   - target Windows 10+ ABI
-#   - /MD runtime (match the host app by default)
+# Builds with the GNU-style clang driver (clang/clang++), NOT MSVC cl.exe and NOT
+# clang-cl. This matches microsoft/hermes-windows' own "base-ninja-clang" preset
+# and is the only combination that actually compiles the engine:
+#   - cl.exe can't parse StaticH.cpp's raw longjmp (__attribute__((naked)) + GNU
+#     __asm__) — "error C2065: 'naked'".
+#   - clang-cl lands in a gap in Hermes' CMake: hermes_update_cxx_flags / jsi key
+#     C++-exception handling on CMAKE_CXX_COMPILER_ID, emitting GNU -fexceptions
+#     for "Clang" (which clang-cl silently ignores) and reserving /EHsc for
+#     "MSVC" only — so API/jsi/jsi.cpp fails with "cannot use 'throw' with
+#     exceptions disabled".
+# clang++ (ID=Clang) honors -fexceptions, so JSI builds. clang.exe still targets
+# x86_64-pc-windows-msvc (MSVC ABI + the SDK from the vcvars env), linking via
+# lld-link/link.exe — so the .def export wiring (gated on WIN32) still applies.
 #
 # Override CMAKE_C/CXX_COMPILER before include for a different compiler.
 
 if(NOT DEFINED CMAKE_C_COMPILER)
-  set(CMAKE_C_COMPILER clang-cl)
+  set(CMAKE_C_COMPILER clang)
 endif()
 if(NOT DEFINED CMAKE_CXX_COMPILER)
-  set(CMAKE_CXX_COMPILER clang-cl)
+  set(CMAKE_CXX_COMPILER clang++)
 endif()
 
 set(CMAKE_SYSTEM_VERSION 10.0 CACHE STRING "")
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreadedDLL" CACHE STRING "")
-
-# clang-cl ignores Hermes' GNU -fexceptions/-fno-exceptions flags and defaults to
-# exceptions OFF (MSVC mode). API/jsi/jsi.cpp throws, so enable the MSVC C++
-# exception model. (The other ignored GNU flags — -fvisibility, -ffunction/
-# data-sections — are non-fatal: exports come from the .def, not -fvisibility.)
-string(APPEND CMAKE_CXX_FLAGS_INIT " /EHsc")

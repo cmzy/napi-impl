@@ -32,12 +32,15 @@ target_link_libraries(napi_hermes PRIVATE napi_flags napi_common Hermes::Hermes)
 if(APPLE)
   target_link_options(napi_hermes PRIVATE
     "-Wl,-exported_symbols_list,${NAPI_IMPL_ROOT}/gn/exports/napi_hermes.exp")
-elseif(MSVC)
-  # The .def both names the exported napi_* surface and drives generation of the
-  # import lib (napi_hermes.lib). Without it the DLL exports nothing — we never
-  # mark symbols with __declspec(dllexport).
+elseif(WIN32)
+  # PE/COFF: the .def both names the exported napi_* surface and drives
+  # generation of the import lib (napi_hermes.lib). Without it the DLL exports
+  # nothing — we never mark symbols with __declspec(dllexport). Gate on WIN32 (not
+  # MSVC) and pass via LINKER: so it reaches link.exe/lld-link through whichever
+  # driver builds the DLL — cl, clang-cl, or the GNU clang driver (MSVC is false
+  # for the latter even though it targets the MSVC ABI).
   target_link_options(napi_hermes PRIVATE
-    "/DEF:${NAPI_IMPL_ROOT}/gn/exports/napi_hermes.def")
+    "LINKER:/DEF:${NAPI_IMPL_ROOT}/gn/exports/napi_hermes.def")
 else()
   target_link_options(napi_hermes PRIVATE
     "-Wl,--version-script=${NAPI_IMPL_ROOT}/gn/exports/napi_hermes.lds")
