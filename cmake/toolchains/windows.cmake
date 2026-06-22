@@ -20,3 +20,9 @@ endif()
 
 set(CMAKE_SYSTEM_VERSION 10.0 CACHE STRING "")
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreadedDLL" CACHE STRING "")
+
+# clang-cl ignores Hermes' GNU -fexceptions/-fno-exceptions flags and defaults to
+# exceptions OFF (MSVC mode). API/jsi/jsi.cpp throws, so enable the MSVC C++
+# exception model. (The other ignored GNU flags — -fvisibility, -ffunction/
+# data-sections — are non-fatal: exports come from the .def, not -fvisibility.)
+string(APPEND CMAKE_CXX_FLAGS_INIT " /EHsc")
