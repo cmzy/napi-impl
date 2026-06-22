@@ -14,23 +14,22 @@ name: Hermes NAPI CI
 # their shape on the matching runners (Apple needs Xcode, Windows needs MSVC —
 # neither cross-builds from Linux).
 #
-# A push to main (or manual workflow_dispatch) runs the full set and uploads the
-# per-platform packages as run artifacts — that is the prebuilt-package build.
+# A push to main (or workflow_dispatch) runs the full set and uploads the
+# per-platform packages as run artifacts. Pushing a `hermes-v*` tag does the same
+# and then the `release` job attaches every package to a GitHub Release.
+#
+# The Hermes release tag is namespaced `hermes-v*` (not `v*`) so it stays
+# independent of the V8 release pipeline (.github/workflows/release.yml triggers
+# on `v*`); a shared tag would make both workflows fight over one Release.
+#
+# No `paths:` filter: GitHub applies it to tag pushes too and frequently skips
+# release tags (the tag's commit diff is empty), so we run on every push to the
+# tracked refs to keep tag-triggered releases reliable.
 
 on:
   push:
     branches: [main, 'worktree-hermes-napi']
-    paths:
-      - 'src/hermes/**'
-      - 'cmake/**'
-      - 'scripts/**'
-      - 'patches/hermes/**'
-      - 'gn/exports/**'
-      - 'HERMES_VERSION'
-      - 'CMakeLists.txt'
-      - 'test/runner.cc'
-      - 'test/hermes_smoke.cc'
-      - '.github/workflows/hermes-ci.yml'
+    tags: ['hermes-v*']
   pull_request:
   workflow_dispatch:
 
@@ -326,3 +325,45 @@ jobs:
         with:
           name: napi-hermes-windows-x64
           path: out/dist/napi-hermes-windows-x64.zip
+
+  # On a v* tag, after every platform job is green, gather their artifacts and
+  # publish a GitHub Release with the full package set attached. Skipped on
+  # branch/PR pushes (the `if`), but it still waits on all five so a partial set
+  # never ships.
+  release:
+    name: publish GitHub release
+    needs: [linux, android, macos, ios, windows]
+    if: startsWith(github.ref, 'refs/tags/hermes-v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write   # gh release create needs write access to Releases
+    steps:
+      - name: Download all platform artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+
+      - name: Stage release assets
+        run: |
+          mkdir -p assets
+          # CMake packages (.tar.gz / .zip) and the AAR are single files nested
+          # one level under their artifact dir.
+          find dist -type f \( -name '*.tar.gz' -o -name '*.zip' -o -name '*.aar' \) \
+            -exec cp {} assets/ \;
+          # The Apple .framework artifacts download as directory trees — zip each
+          # into a single release asset.
+          for fw in dist/NapiHermes-*.framework; do
+            [ -d "$fw" ] || continue
+            name=$(basename "$fw")
+            (cd "$fw" && zip -qr "${GITHUB_WORKSPACE}/assets/${name}.zip" .)
+          done
+          echo "Release assets:"; ls -la assets
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" assets/* \
+            --repo "${GITHUB_REPOSITORY}" \
+            --title "Hermes NAPI ${GITHUB_REF_NAME}" \
+            --generate-notes
