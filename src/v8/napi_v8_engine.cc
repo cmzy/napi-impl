@@ -43,10 +43,50 @@ namespace {
     public:
         EmbedEnv(v8::Local<v8::Context> ctx, int32_t module_api_version) : napi_env__(ctx, module_api_version) {}
 
-        // No host queue: invoke finalizers synchronously.
+        // No host queue: invoke finalizers synchronously. Finalizers run between
+        // event-loop turns or at env teardown, where there is no ambient
+        // HandleScope and the context has been exited — yet a finalizer may
+        // allocate V8 handles or call into JS (napi_get_global,
+        // napi_call_function, ...). Establish a HandleScope and re-enter the
+        // context here; without the scope, e.g. napi_get_global fatals with
+        // "Cannot create a handle without a HandleScope". Route through
+        // CallIntoModule so a thrown finalizer exception is captured and surfaced
+        // as an uncaught exception instead of silently poisoning the next napi
+        // call (matches Node's --force-node-api-uncaught-exceptions-policy and the
+        // Hermes backend's unhandled-error path).
         void CallFinalizer(napi_finalize cb, void *data, void *hint) override {
-            if (cb != nullptr)
-                cb(this, data, hint);
+            if (cb == nullptr)
+                return;
+            v8::HandleScope handle_scope(isolate);
+            v8::Local<v8::Context> ctx = context();
+            v8::Context::Scope context_scope(ctx);
+            CallIntoModule([&](napi_env env) { cb(env, data, hint); },
+                           [this](napi_env /*env*/, v8::Local<v8::Value> error) { EmitUncaughtException(error); });
+        }
+
+    private:
+        // Surface an unhandled finalizer exception to globalThis.__emitUncaughtException
+        // (the host bridge for Node's process 'uncaughtException'). The thrown value
+        // is already captured in `error_value`, so clear the pending exception first
+        // so we can call back into JS. If no dispatcher is installed, it throws, or
+        // V8 is terminating, the exception is dropped after clearing — never left
+        // pending to corrupt the next napi call.
+        void EmitUncaughtException(v8::Local<v8::Value> error_value) {
+            napi_value error = v8impl::JsValueFromV8LocalValue(error_value);
+            napi_value pending = nullptr;
+            napi_get_and_clear_last_exception(this, &pending);
+            if (terminatedOrTerminating())
+                return;
+            napi_value global = nullptr, emit = nullptr;
+            napi_valuetype t = napi_undefined;
+            if (napi_get_global(this, &global) == napi_ok &&
+                napi_get_named_property(this, global, "__emitUncaughtException", &emit) == napi_ok &&
+                napi_typeof(this, emit, &t) == napi_ok && t == napi_function) {
+                napi_value undef = nullptr, res = nullptr, argv[1] = {error};
+                napi_get_undefined(this, &undef);
+                if (napi_call_function(this, undef, emit, 1, argv, &res) != napi_ok)
+                    napi_get_and_clear_last_exception(this, &pending); // dispatcher threw; drop
+            }
         }
     };
 
