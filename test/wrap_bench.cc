@@ -60,8 +60,10 @@ double best_ns_per_op(int reps, long n, void (*body)(long, volatile uintptr_t*),
 
 // Globals so the timed lambdas (plain function pointers) can reach them.
 napi_env g_env = nullptr;
-napi_value g_class_inst = nullptr; // define_class instance (internal fields)
-napi_value g_plain_inst = nullptr; // plain object (private-prop path)
+napi_value g_class_inst = nullptr;     // define_class instance (internal fields)
+napi_value g_plain_inst = nullptr;     // plain object (private-prop path)
+napi_value g_wrapcycle_inst = nullptr; // define_class instance kept unwrapped for the wrap/remove cycle
+Ctx g_ctx;                             // the native the benchmarks wrap
 
 void unwrap_class(long n, volatile uintptr_t* sink) {
     uintptr_t acc = 0;
@@ -83,6 +85,28 @@ void unwrap_plain(long n, volatile uintptr_t* sink) {
     *sink += acc;
 }
 
+void wrap_remove_class(long n, volatile uintptr_t* sink) {
+    uintptr_t acc = 0;
+    for (long i = 0; i < n; ++i) {
+        napi_wrap(g_env, g_wrapcycle_inst, &g_ctx, nullptr, nullptr, nullptr);
+        void* p = nullptr;
+        napi_remove_wrap(g_env, g_wrapcycle_inst, &p);
+        acc += reinterpret_cast<uintptr_t>(p);
+    }
+    *sink += acc;
+}
+
+void scope_openclose(long n, volatile uintptr_t* sink) {
+    uintptr_t acc = 0;
+    for (long i = 0; i < n; ++i) {
+        napi_handle_scope s = nullptr;
+        napi_open_handle_scope(g_env, &s);
+        acc += reinterpret_cast<uintptr_t>(s);
+        napi_close_handle_scope(g_env, s);
+    }
+    *sink += acc;
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -100,41 +124,48 @@ int main(int argc, char** argv) {
     napi_handle_scope scope = nullptr;
     CHECK(napi_open_handle_scope(g_env, &scope));
 
-    static Ctx ctx;
-    ctx.x = 42;
+    g_ctx.x = 42;
 
     // [class] a napi_define_class instance — reserves internal fields.
     napi_value cls = nullptr;
     CHECK(napi_define_class(g_env, "K", NAPI_AUTO_LENGTH, Ctor, nullptr, 0, nullptr, &cls));
     CHECK(napi_new_instance(g_env, cls, 0, nullptr, &g_class_inst));
-    CHECK(napi_wrap(g_env, g_class_inst, &ctx, nullptr, nullptr, nullptr));
+    CHECK(napi_wrap(g_env, g_class_inst, &g_ctx, nullptr, nullptr, nullptr));
+    // [wrap] a second define_class instance, left UNWRAPPED for the wrap/remove cycle.
+    CHECK(napi_new_instance(g_env, cls, 0, nullptr, &g_wrapcycle_inst));
 
     // [plain] a plain object — no internal fields, forces the private-prop path.
     CHECK(napi_create_object(g_env, &g_plain_inst));
-    CHECK(napi_wrap(g_env, g_plain_inst, &ctx, nullptr, nullptr, nullptr));
+    CHECK(napi_wrap(g_env, g_plain_inst, &g_ctx, nullptr, nullptr, nullptr));
 
-    // Sanity: both unwrap to &ctx.
+    // Sanity: both unwrap to &g_ctx.
     void* pc = nullptr;
     void* pp = nullptr;
     CHECK(napi_unwrap(g_env, g_class_inst, &pc));
     CHECK(napi_unwrap(g_env, g_plain_inst, &pp));
-    if (pc != &ctx || pp != &ctx) {
+    if (pc != &g_ctx || pp != &g_ctx) {
         std::fprintf(stderr, "unwrap returned wrong pointer\n");
         return 1;
     }
 
     volatile uintptr_t sink = 0;
+    const long wn = n / 5; // wrap/remove is heavier (alloc+free); fewer iterations
 
     // warm up
     unwrap_class(n / 10, &sink);
     unwrap_plain(n / 10, &sink);
+    wrap_remove_class(wn / 10, &sink);
 
     double cls_ns = best_ns_per_op(reps, n, unwrap_class, &sink);
     double plain_ns = best_ns_per_op(reps, n, unwrap_plain, &sink);
+    double scope_ns = best_ns_per_op(reps, n, scope_openclose, &sink);
+    double wrap_ns = best_ns_per_op(reps, wn, wrap_remove_class, &sink);
 
     std::printf("napi_unwrap microbench  (N=%ld, best of %d)\n", n, reps);
     std::printf("  [class] define_class instance : %7.2f ns/op   %8.1f Mops/s\n", cls_ns, 1000.0 / cls_ns);
     std::printf("  [plain] plain object          : %7.2f ns/op   %8.1f Mops/s\n", plain_ns, 1000.0 / plain_ns);
+    std::printf("  [scope] open+close handle scope: %6.2f ns/op   %8.1f Mops/s\n", scope_ns, 1000.0 / scope_ns);
+    std::printf("  [wrap]  wrap+remove cycle      : %6.2f ns/op   %8.1f Mops/s\n", wrap_ns, 1000.0 / wrap_ns);
     std::printf("  (sink=%llu)\n", static_cast<unsigned long long>(sink));
 
     CHECK(napi_close_handle_scope(g_env, scope));
