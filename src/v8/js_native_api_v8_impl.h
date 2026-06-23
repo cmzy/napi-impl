@@ -229,7 +229,6 @@ namespace v8impl {
         if (action == KeepWrap)
             CHECK_ARG(env, result);
 
-        v8::Local<v8::Context> context = env->context();
         v8::Local<v8::Value> value = v8impl::V8LocalValueFromJsValue(js_object);
         RETURN_STATUS_IF_FALSE(env, value->IsObject(), napi_invalid_arg);
         v8::Local<v8::Object> obj = value.As<v8::Object>();
@@ -239,6 +238,8 @@ namespace v8impl {
         // non-null slot means the object is wrapped, so we can return the pointer
         // with an O(1) field read instead of a private-property lookup. RemoveWrap
         // needs the Reference*, so it skips this and takes the slow path below.
+        // (Note we have not materialized env->context() yet — the fast path needs
+        // no context, so we defer that handle work to the slow path.)
         if (action == KeepWrap && obj->InternalFieldCount() >= 1) {
             void *p = obj->GetAlignedPointerFromInternalField(0, v8::kEmbedderDataTypeTagDefault);
             if (p != nullptr) {
@@ -247,6 +248,7 @@ namespace v8impl {
             }
         }
 
+        v8::Local<v8::Context> context = env->context();
         auto val = obj->GetPrivate(context, NAPI_PRIVATE_KEY(context, wrapper)).ToLocalChecked();
         RETURN_STATUS_IF_FALSE(env, val->IsExternal(), napi_invalid_arg);
         Reference *reference = static_cast<v8impl::Reference *>(val.As<v8::External>()->Value());
