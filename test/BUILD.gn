@@ -28,7 +28,17 @@ executable("fast_call_smoke") {
   deps = [ "//napi/src/v8:napi_v8" ]
 }
 
+executable("wrap_bench") {
+  testonly = true
+  sources = [ "wrap_bench.cc" ]
+  configs += [
+    "//napi/gn:napi_flags",
+    "//:external_config",
+  ]
+  deps = [ "//napi/src/v8:napi_v8" ]
+}
+
 group("test") {
   testonly = true
-  deps = [ ":run", ":runner", ":fast_call_smoke" ]
+  deps = [ ":run", ":runner", ":fast_call_smoke", ":wrap_bench" ]
 }
