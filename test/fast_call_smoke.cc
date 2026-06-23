@@ -109,6 +109,14 @@ double selfnull_fast(napi_fast_recv recv) {
     return napi_fast_unwrap(recv, &kCalcTag) == nullptr ? 1.0 : 0.0;
 }
 
+// Diagnostic: value_unwrap with NO type tag (the opt-out path). 1 if NULL.
+// Used to check whether a TypedArray / plain object (which the tag check would
+// otherwise reject) reads a garbage field-0 on the NULL-tag path.
+double notag_fast(napi_fast_recv recv, napi_fast_value v) {
+    (void)recv;
+    return napi_fast_value_unwrap(v, nullptr) == nullptr ? 1.0 : 0.0;
+}
+
 // wants_options=true: recover the bound data via the options handle.
 double getdata_fast(napi_fast_recv recv, napi_fast_options opts) {
     (void)recv;
@@ -277,6 +285,9 @@ int main() {
 
     const napi_fast_signature isnull_sig{napi_fast_float64, 2, one_obj, false};
     CHECK(define_method(env, calc, "isnull", generic_slow, &isnull_sig, reinterpret_cast<const void*>(&isnull_fast)));
+
+    const napi_fast_signature notag_sig{napi_fast_float64, 2, one_obj, false};
+    CHECK(define_method(env, calc, "notag", generic_slow, &notag_sig, reinterpret_cast<const void*>(&notag_fast)));
 
     // wants_options=true: data bound at registration, read in the fast path.
     const napi_fast_type recv_only[] = {napi_fast_receiver};
@@ -467,6 +478,57 @@ int main() {
         CHECK(napi_get_value_double(env, r, &s));
         std::printf("  [info] non-object receiver selfnull -> %g\n", s);
         EXPECT(s == 0.0 || s == 1.0, "non-object (string) receiver: no crash");
+    }
+
+    // --- HARDENING: forged object via Object.create (0 internal fields) -----
+    // A page can do Object.create(handle.__proto__) to get an object that has the
+    // prototype's fast methods but NO internal fields. The fast path must treat it
+    // as "no native slot" (NULL), never read field 0 of a zero-field object.
+    {
+        const char* js =
+                "var fake = Object.create(Object.getPrototypeOf(bare));"
+                "function pf(o){return o.selfnull();}"
+                "%PrepareFunctionForOptimization(pf);"
+                "pf(fake); pf(fake);"
+                "%OptimizeFunctionOnNextCall(pf);"
+                "pf(fake);";
+        napi_value r = nullptr;
+        CHECK(run(env, js, &r));
+        double s = -1;
+        CHECK(napi_get_value_double(env, r, &s));
+        std::printf("  [info] Object.create forgery selfnull -> %g\n", s);
+        EXPECT(s == 1.0, "forged (0-field) receiver unwraps to NULL, no crash");
+    }
+
+    // --- HARDENING: napi_fast_wrap rejects an unaligned type_tag -----------
+    {
+        const void* bad_tag = reinterpret_cast<const void*>(reinterpret_cast<uintptr_t>(&kCalcTag) | 1u);
+        napi_value tmp = nullptr;
+        CHECK(napi_new_instance(env, cls, 0, nullptr, &tmp));
+        napi_status st = napi_fast_wrap(env, tmp, &calc_ctx, bad_tag, nullptr, nullptr, nullptr);
+        EXPECT(st == napi_invalid_arg, "napi_fast_wrap rejects an unaligned type_tag (no V8 fatal)");
+    }
+
+    // --- DIAGNOSTIC: does the NULL-tag (opt-out) unwrap stay safe on a -------
+    // TypedArray / plain object (which V8 may give internal fields to)?
+    {
+        const char* js =
+                "function pn(o,x){return o.notag(x);}"
+                "var ta=new Float32Array([1,2,3,4]); var po={};"
+                "%PrepareFunctionForOptimization(pn);"
+                "pn(calc,ta); pn(calc,ta);"
+                "%OptimizeFunctionOnNextCall(pn);"
+                "[pn(calc,ta), pn(calc,po)];";
+        napi_value r = nullptr, e0 = nullptr, e1 = nullptr;
+        CHECK(run(env, js, &r));
+        CHECK(napi_get_element(env, r, 0, &e0));
+        CHECK(napi_get_element(env, r, 1, &e1));
+        double ta_null = 0, po_null = 0;
+        CHECK(napi_get_value_double(env, e0, &ta_null));
+        CHECK(napi_get_value_double(env, e1, &po_null));
+        std::printf("  [info] NULL-tag unwrap: Float32Array->null?=%g plainObject->null?=%g\n", ta_null, po_null);
+        EXPECT(ta_null == 1.0, "NULL-tag unwrap of a TypedArray is NULL (no garbage field-0 read)");
+        EXPECT(po_null == 1.0, "NULL-tag unwrap of a plain object is NULL");
     }
 
     // --- ADVERSARIAL: unwrap an UNSET internal field (not fast_wrap'd) ------
