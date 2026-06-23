@@ -238,6 +238,14 @@ namespace v8impl {
 
         if (action == RemoveWrap) {
             CHECK(obj->DeletePrivate(context, NAPI_PRIVATE_KEY(context, wrapper)).FromJust());
+            // Also clear the fast-call mirror (fields 0=native, 1=type tag) so a
+            // still-live JS object can't hand a now-removed (possibly freed)
+            // pointer to napi_fast_unwrap — i.e. no use-after-remove via fast call.
+            int fields = obj->InternalFieldCount();
+            if (fields >= 1)
+                obj->SetAlignedPointerInInternalField(0, nullptr, v8::kEmbedderDataTypeTagDefault);
+            if (fields >= 2)
+                obj->SetAlignedPointerInInternalField(1, nullptr, v8::kEmbedderDataTypeTagDefault);
             if (reference->ownership() == ReferenceOwnership::kUserland) {
                 reference->ResetFinalizer();
             } else {
@@ -336,19 +344,21 @@ namespace v8impl {
             napi_callback_info cbinfo_wrapper = reinterpret_cast<napi_callback_info>(this);
             napi_env env = bundle_->env;
             napi_callback cb = bundle_->cb;
-            // On construction of an object that reserves a fast-call native slot
-            // (internal field 0; every napi_define_class instance does, see
-            // function.cc / fast_call.cc), initialize it to nullptr *before*
+            // On construction of an object that reserves fast-call slots (internal
+            // fields 0=native, 1=type tag; every napi_define_class instance does,
+            // see function.cc / fast_call.cc), initialize them to nullptr *before*
             // running the user constructor (which may napi_fast_wrap and thus
-            // overwrite it). Without this, napi_fast_unwrap on an instance that
+            // overwrite them). Without this, napi_fast_unwrap on an instance that
             // was never napi_fast_wrap'd reads an uninitialized aligned-pointer
             // field — V8 undefined behavior yielding a garbage pointer. The
             // IsConstructCall() guard keeps the (hot) method-call path free.
             if (cbinfo_.IsConstructCall()) {
                 v8::Local<v8::Object> self = cbinfo_.This();
-                if (self->InternalFieldCount() >= 1) {
-                    self->SetAlignedPointerInInternalField(0, nullptr);
-                }
+                int fields = self->InternalFieldCount();
+                if (fields >= 1)
+                    self->SetAlignedPointerInInternalField(0, nullptr, v8::kEmbedderDataTypeTagDefault);
+                if (fields >= 2)
+                    self->SetAlignedPointerInInternalField(1, nullptr, v8::kEmbedderDataTypeTagDefault);
             }
             napi_value result = nullptr;
             bool exceptionOccurred = false;

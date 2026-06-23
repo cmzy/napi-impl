@@ -37,19 +37,22 @@ napi_status NAPI_CDECL napi_create_fast_function_overloads(napi_env env, const c
     return napi_create_function(env, utf8name, length, slow_cb, data, result);
 }
 
-napi_status NAPI_CDECL napi_fast_wrap(napi_env env, napi_value js_object, void* native, napi_finalize finalize_cb,
-                                      void* finalize_hint, napi_ref* result) {
+napi_status NAPI_CDECL napi_fast_wrap(napi_env env, napi_value js_object, void* native, const void* type_tag,
+                                      napi_finalize finalize_cb, void* finalize_hint, napi_ref* result) {
+    (void)type_tag;
     return napi_wrap(env, js_object, native, reinterpret_cast<node_api_basic_finalize>(finalize_cb), finalize_hint,
                      result);
 }
 
-void* NAPI_CDECL napi_fast_unwrap(napi_fast_recv recv) {
+void* NAPI_CDECL napi_fast_unwrap(napi_fast_recv recv, const void* expected_type_tag) {
     (void)recv;
+    (void)expected_type_tag;
     return nullptr;
 }
 
-void* NAPI_CDECL napi_fast_value_unwrap(napi_fast_value value) {
+void* NAPI_CDECL napi_fast_value_unwrap(napi_fast_value value, const void* expected_type_tag) {
     (void)value;
+    (void)expected_type_tag;
     return nullptr;
 }
 

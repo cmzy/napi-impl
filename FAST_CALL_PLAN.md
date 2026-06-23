@@ -71,16 +71,21 @@ void write_fast(napi_fast_recv recv, uint32_t target, napi_fast_value src, uint3
 **问题（F7）**：fast 回调禁止慢操作，读不了私有属性 → 拿不到 native 指针。
 **解法**：把 native 裸指针存进 **V8 internal field**，`GetAlignedPointerFromInternalField(0)` 是官方 fast-safe 读法。
 
-- **D1**：`napi_define_class` 内 `tpl->InstanceTemplate()->SetInternalFieldCount(1)`（内部实现改动，非 API 变更）。
-- **`napi_fast_wrap`** = 正常 wrap（私有属性，供 slow 的 `napi_unwrap`）**＋** `SetAlignedPointerInInternalField(0, native)`。
-  两处指向同一指针 → slow 与 fast 取到同一 ctx。
-- **`napi_fast_unwrap(recv)`** / **`napi_fast_value_unwrap(val)`**：读 internal field 0；null/undefined 或
-  field count 为 0 的对象返回 NULL。
+- **D1**：`napi_define_class` 内 `tpl->InstanceTemplate()->SetInternalFieldCount(2)`（field 0=native、field 1=type
+  tag；内部实现改动，非 API 变更）。
+- **`napi_fast_wrap`** = 正常 wrap（私有属性，供 slow 的 `napi_unwrap`）**＋** 把 native 存 field 0、type_tag 存
+  field 1。两处的 native 指向同一指针 → slow 与 fast 取到同一 ctx。
+- **`napi_fast_unwrap(recv, tag)`** / **`napi_fast_value_unwrap(val, tag)`**：先 `IsObject` 守卫，再读 field 0；
+  非对象 / field count 为 0 / （tag≠NULL 时）field 1 的 tag 不匹配 → 返回 NULL。
+- **构造期初始化**：每个实例构造时 field 0/1 先置 NULL（`InvokeCallback` 内，`IsConstructCall` 守卫），
+  避免读未初始化 aligned-pointer field 的 UB（§7.1 BUG-1）。
+- **`napi_remove_wrap` 清场**：移除 wrap 时一并把 field 0/1 清 NULL，防 remove 后仍在世的 JS 对象经 fast 解出
+  野/已释放指针（§7.1 BUG-3）。
 
-**调用方契约（信任边界）**：fast 命中时 receiver / 对象入参的**类型须由调用方在进 native 前保证**（典型是
-JS 侧已做 arity+类型规整）。helper 在读 field 0 前会防御 null/undefined 与 `InternalFieldCount()==0`，但**不**
-做「是否本族类型」的强校验（fast 内无廉价手段）。需要更强保证的调用方可走可选硬化：在 field 1 存 type-tag、
-解包前自校验（本期默认不实现，列为后续可选项）。
+**调用方契约（信任边界，已由 type-tag 强化）**：fast 命中时 receiver / 对象入参的类型由 **(a) 调用方上层规整**
+**＋ (b) field 1 的 type-tag 原生校验** 双保险。type-tag 是关键——本引擎跑**不可信网页 JS**，页面能用
+`fn.call(异类handle)` 绕过 JS facade，单靠 (a) 不够；(b) 让异类 receiver 在 native 侧即被拒（解出 NULL），调用方
+`if(!ctx) return;` 即安全。每类用一个稳定 token（如 static 地址）作 tag。
 
 ## 4. 新增 API（全部加法）
 
@@ -138,15 +143,18 @@ NAPI_EXTERN napi_status NAPI_CDECL napi_create_fast_function_overloads(
     napi_env env, const char* utf8name, size_t length, napi_callback slow_cb,
     const napi_fast_overload* overloads, size_t overload_count, void* data, napi_value* result);
 
-// 【C-2】fast-safe wrap：等价 napi_wrap，且把 native 存入 internal field 0（fast 可读）。napi_unwrap 照常可用。
-// 非 fast 引擎：等价 napi_wrap。
+// 【C-2】fast-safe wrap：等价 napi_wrap，且把 native 存入 internal field 0、type_tag 存入 field 1（fast 可读）。
+// type_tag = 每类一个稳定 token（如某 static 的地址）；解包按 tag 拒绝异类 receiver（防 fn.call(异类) 型混淆）。
+// NULL = 不打 tag。native/type_tag 须 ≥2 字节对齐（存为 V8 aligned pointer，低位保留）——不对齐返 napi_invalid_arg。
+// napi_unwrap 照常可用。非 fast 引擎：等价 napi_wrap（忽略 tag）。
 NAPI_EXTERN napi_status NAPI_CDECL napi_fast_wrap(
-    napi_env env, napi_value js_object, void* native,
+    napi_env env, napi_value js_object, void* native, const void* type_tag,
     napi_finalize finalize_cb, void* finalize_hint, napi_ref* result);
 
-// 【C-2】fast 回调内解包（读 internal field 0，O(1)，fast-safe）。
-NAPI_EXTERN void* NAPI_CDECL napi_fast_unwrap(napi_fast_recv recv);       // receiver → native ctx
-NAPI_EXTERN void* NAPI_CDECL napi_fast_value_unwrap(napi_fast_value v);   // 对象入参 → native（null/无 field→NULL）
+// 【C-2】fast 回调内解包（读 internal field，O(1)，fast-safe）。非对象 / 无 field / tag 不匹配 → NULL（调用方须当
+// 「错误/缺失 receiver」直接退出、不解引用）。expected_type_tag 传与 wrap 相同的 tag；NULL = 跳过类型校验。
+NAPI_EXTERN void* NAPI_CDECL napi_fast_unwrap(napi_fast_recv recv, const void* expected_type_tag);
+NAPI_EXTERN void* NAPI_CDECL napi_fast_value_unwrap(napi_fast_value v, const void* expected_type_tag);
 NAPI_EXTERN bool  NAPI_CDECL napi_fast_value_is_nullish(napi_fast_value v); // null/undefined?
 
 // 【C-2】字节视图（基于 F6 的 GetContents/CopyContents，fast-safe）：
@@ -247,6 +255,27 @@ napi-impl 支持的入参种类（调用方据此组合签名）：
 - **✅ 覆盖补全（真机过）：** `wants_options=true` 经 `napi_fast_options_get_data` 在 fast 路径取回绑定 data；
   `napi_create_fast_function_overloads` 双 arity 经 V8 按实参数分发——均断言通过。
 
+### 7.1.1 三度审查：receiver 处理硬化（2026-06-22，真机验证；针对不可信网页 JS）
+
+本引擎跑**不可信网页 JS**，页面能用 `.call()`/`.apply()` 绕过 facade 的 JS 壳、任意控制 fast 方法的 receiver；
+而 TurboFan 走 fast 看被调函数、不看 receiver。下面三个 receiver 缝隙因此具安全性，已全部修复 + 真机断言：
+
+- **🐛 #1（类型混淆，已修）：fast 方法无 `Signature` → 异类 receiver 误解包。** slow 的 define_class 方法绑了
+  `v8::Signature`，fast 没有。`gl.drawArrays.call(某WebGLBuffer,…)` 会把 buffer 的 native 指针当 context 用。
+  **修复**：每类一个 **type-tag** 存 field 1，`napi_fast_wrap(…, tag, …)` 写、`napi_fast_unwrap(recv, tag)` 校验；
+  tag 不符 → NULL。真机：同形异 tag 实例在优化后的 fast 路径上被拒（`wrong-tag → 1`）。
+- **🐛 #2（崩溃，已修）：`napi_fast_unwrap` 缺 `IsObject` 守卫**（`value_unwrap` 有，不对称）。`m.call(42)` →
+  对 Smi 调 `InternalFieldCount` → UB/崩。**修复**：解包统一走 `UnwrapNative`，先 `IsObject`。真机：String receiver
+  走 fast 不崩、解出 NULL。
+- **🐛 #3（use-after-remove，已修）：`napi_remove_wrap` 不清 internal field。** 只删私有属性、field 0 残留；remove
+  后仍在世的 JS 对象经 fast 解出**已释放指针** → UAF。**修复**：`Unwrap(RemoveWrap)` 一并清 field 0/1。真机：
+  remove 前 fast 槽=native、remove 后=NULL。
+- **附带修：tag 对齐 footgun。** `static const char` tag（字节对齐）传进 `SetAlignedPointerInInternalField` 会 V8
+  **fatal「Unaligned pointer」**。**修复**：`napi_fast_wrap` 对 native/tag 低位非零**优雅返 `napi_invalid_arg`**（不再 fatal）；
+  头文件要求 tag ≥2 对齐。
+- **代价**：define_class 实例 field 1→2（再 +1 指针/实例）；解包多一次 tag load+比较（仅 expected_tag≠NULL 时）。
+  js-native-api 仍 **47/50 零回归**；churn 50k 仍 **0 泄漏**。
+
 ### 7.2 已知次要项（非 bug，权衡后保留）
 
 - **`InternalFieldCount()` 守卫成本**：解包每次多一次 map 读，用于安全处理「0 field 的普通对象作入参」与
@@ -254,8 +283,8 @@ napi-impl 支持的入参种类（调用方据此组合签名）：
 - **`IsConstructCall()` 分支**：BUG-1 修复给所有 napi 函数调用加了 1 个分支；非 construct（即全部方法调用）直接
   短路，成本可忽略；已验零回归。
 - **`ElemKind` 类型链**：`out_elem` 传 NULL 时整段跳过（已门控）；需要时最坏 ~11 次廉价谓词。
-- **未做范围/类型校验**：`arg_types[0]` 是否 receiver、重载 arg_count 是否唯一、`native` 是否 2 对齐——均属调用方
-  契约（文档已述），未加运行时校验（保持热点零成本）。
+- **部分校验**：`native`/`type_tag` 是否 2 对齐**已在 `napi_fast_wrap` 校验**（不对齐返 `napi_invalid_arg`，§7.1.1）。
+  `arg_types[0]` 是否 receiver、重载 arg_count 是否唯一仍属调用方契约（文档已述），未加运行时校验（热点零成本）。
 
 ## 8. 文件 / 符号清单（napi-impl 内）
 

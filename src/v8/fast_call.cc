@@ -9,6 +9,7 @@
 // V8 14.2 specifics baked in: no per-call fallback (no options.fallback);
 // TypedArray/AB are read via ArrayBufferView::GetContents (handle-free).
 
+#include <cstdint>
 #include <cstring>
 #include <memory>
 #include <vector>
@@ -173,43 +174,68 @@ napi_status NAPI_CDECL napi_create_fast_function_overloads(napi_env env, const c
     return GET_RETURN_STATUS(env);
 }
 
-napi_status NAPI_CDECL napi_fast_wrap(napi_env env, napi_value js_object, void* native,
+napi_status NAPI_CDECL napi_fast_wrap(napi_env env, napi_value js_object, void* native, const void* type_tag,
                                       napi_finalize finalize_cb, void* finalize_hint, napi_ref* result) {
+    CHECK_ENV(env);
+    // native and type_tag are stored as V8 aligned pointers (the low bit is
+    // reserved). Reject an unaligned input cleanly instead of letting V8 raise a
+    // fatal "Unaligned pointer" — e.g. a `static const char` tag sentinel, which
+    // is byte-aligned. Use a >=2-aligned tag (an int/pointer or alignas(2)).
+    RETURN_STATUS_IF_FALSE(env, (reinterpret_cast<uintptr_t>(native) & 1u) == 0, napi_invalid_arg);
+    RETURN_STATUS_IF_FALSE(env, (reinterpret_cast<uintptr_t>(type_tag) & 1u) == 0, napi_invalid_arg);
+
     // Standard wrap (private property + finalizer/ref) so napi_unwrap keeps working.
     napi_status status = v8impl::Wrap(env, js_object, native, finalize_cb, finalize_hint, result);
     if (status != napi_ok)
         return status;
 
-    // Mirror into internal field 0 for fast-safe reads, when the slot exists.
+    // Mirror into the fast-readable internal fields: 0 = native ptr, 1 = type tag
+    // (so the unwrap helpers can reject a wrong-class receiver), when reserved.
     v8::Local<v8::Value> v = v8impl::V8LocalValueFromJsValue(js_object);
     if (v->IsObject()) {
         v8::Local<v8::Object> obj = v.As<v8::Object>();
-        if (obj->InternalFieldCount() >= 1)
-            obj->SetAlignedPointerInInternalField(0, native);
+        int fields = obj->InternalFieldCount();
+        if (fields >= 1)
+            obj->SetAlignedPointerInInternalField(0, native, v8::kEmbedderDataTypeTagDefault);
+        if (fields >= 2)
+            obj->SetAlignedPointerInInternalField(1, const_cast<void*>(type_tag), v8::kEmbedderDataTypeTagDefault);
     }
     return napi_clear_last_error(env);
 }
 
 //=== Fast-call-only helpers (run inside a fast callback: no env, no alloc) ====
 
-void* NAPI_CDECL napi_fast_unwrap(napi_fast_recv recv) {
-    v8::Local<v8::Object> obj;
-    static_assert(sizeof(obj) == sizeof(recv), "Local<Object> must be pointer-sized");
-    std::memcpy(static_cast<void*>(&obj), &recv, sizeof(obj));
-    if (obj.IsEmpty() || obj->InternalFieldCount() < 1)
-        return nullptr;
-    return obj->GetAlignedPointerFromInternalField(0);
+namespace {
+    // Read native ptr (field 0) iff `v` is an object carrying the fast slot AND
+    // (when expected_tag != NULL) its type tag (field 1) matches — guarding both
+    // non-object receivers and cross-class type confusion. fast-safe.
+    void* UnwrapNative(v8::Local<v8::Value> v, const void* expected_tag) {
+        if (v.IsEmpty() || !v->IsObject())
+            return nullptr;
+        v8::Local<v8::Object> obj = v.As<v8::Object>();
+        int fields = obj->InternalFieldCount();
+        if (fields < 1)
+            return nullptr;
+        if (expected_tag != nullptr) {
+            if (fields < 2 ||
+                obj->GetAlignedPointerFromInternalField(1, v8::kEmbedderDataTypeTagDefault) != expected_tag)
+                return nullptr;
+        }
+        return obj->GetAlignedPointerFromInternalField(0, v8::kEmbedderDataTypeTagDefault);
+    }
+} // namespace
+
+void* NAPI_CDECL napi_fast_unwrap(napi_fast_recv recv, const void* expected_type_tag) {
+    v8::Local<v8::Value> v;
+    static_assert(sizeof(v) == sizeof(recv), "Local must be pointer-sized");
+    std::memcpy(static_cast<void*>(&v), &recv, sizeof(v));
+    return UnwrapNative(v, expected_type_tag);
 }
 
-void* NAPI_CDECL napi_fast_value_unwrap(napi_fast_value value) {
+void* NAPI_CDECL napi_fast_value_unwrap(napi_fast_value value, const void* expected_type_tag) {
     v8::Local<v8::Value> v;
     std::memcpy(static_cast<void*>(&v), &value, sizeof(v));
-    if (v.IsEmpty() || v->IsNullOrUndefined() || !v->IsObject())
-        return nullptr;
-    v8::Local<v8::Object> obj = v.As<v8::Object>();
-    if (obj->InternalFieldCount() < 1)
-        return nullptr;
-    return obj->GetAlignedPointerFromInternalField(0);
+    return UnwrapNative(v, expected_type_tag);
 }
 
 bool NAPI_CDECL napi_fast_value_is_nullish(napi_fast_value value) {

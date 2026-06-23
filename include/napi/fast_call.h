@@ -122,29 +122,41 @@ NAPI_EXTERN napi_status NAPI_CDECL napi_create_fast_function_overloads(napi_env 
 
 // --- Wrap / unwrap (fast-safe native pointer storage) -----------------------
 
-// Like napi_wrap, but ALSO stores `native` in a fast-readable slot (V8 internal
-// field 0) so napi_fast_unwrap can retrieve it inside a fast callback. The JS
-// object must be an instance created with a reserved internal field (every
-// napi_define_class instance reserves one). napi_unwrap keeps working (slow
-// path). If the object has no internal field, only the slow wrap is recorded
-// and napi_fast_unwrap will return NULL. On non-fast engines: identical to
-// napi_wrap.
-// `native` must be at least 2-byte aligned (V8 stores it as an aligned pointer
-// and uses the low bit); pointers from new/malloc always satisfy this.
+// Like napi_wrap, but ALSO stores `native` in fast-readable slots (V8 internal
+// fields) so napi_fast_unwrap can retrieve it inside a fast callback. The JS
+// object must be an instance created with reserved internal fields (every
+// napi_define_class instance reserves two: field 0 = native ptr, field 1 =
+// type tag). napi_unwrap keeps working (slow path). If the object has no
+// internal fields, only the slow wrap is recorded and napi_fast_unwrap returns
+// NULL. On non-fast engines: identical to napi_wrap.
+//   type_tag : a stable per-class token (e.g. the address of a static sentinel,
+//              one per native handle class). The unwrap helpers reject a receiver
+//              whose stored tag != the expected tag — this is what prevents a
+//              fast method of class A from being invoked (via fn.call(b)) on an
+//              instance of class B and mis-reading its pointer. Pass NULL to skip
+//              type tagging (only fine when receiver type can't be confused).
+// `native` and `type_tag` must be at least 2-byte aligned (V8 stores them as
+// aligned pointers and uses the low bit); pointers from new/malloc/statics always
+// satisfy this.
 NAPI_EXTERN napi_status NAPI_CDECL napi_fast_wrap(napi_env env,
                                                  napi_value js_object,
                                                  void* native,
+                                                 const void* type_tag,
                                                  napi_finalize finalize_cb,
                                                  void* finalize_hint,
                                                  napi_ref* result);
 
-// Recover the native ctx from the receiver inside a fast callback (O(1) read of
-// internal field 0). Returns NULL if the receiver carries no fast slot.
-NAPI_EXTERN void* NAPI_CDECL napi_fast_unwrap(napi_fast_recv recv);
+// Recover the native ctx from the receiver inside a fast callback (O(1) internal
+// field reads). Returns NULL if the receiver is not an object, carries no fast
+// slot, or (when expected_type_tag != NULL) its stored type tag does not match —
+// the caller MUST treat NULL as "wrong/absent receiver" and bail without
+// dereferencing. Pass the same tag used at napi_fast_wrap; NULL skips the check.
+NAPI_EXTERN void* NAPI_CDECL napi_fast_unwrap(napi_fast_recv recv, const void* expected_type_tag);
 
 // Recover the native pointer behind an object argument inside a fast callback.
-// Returns NULL for null/undefined or a value with no fast slot.
-NAPI_EXTERN void* NAPI_CDECL napi_fast_value_unwrap(napi_fast_value v);
+// Returns NULL for null/undefined, a non-object, a value with no fast slot, or a
+// type-tag mismatch (when expected_type_tag != NULL).
+NAPI_EXTERN void* NAPI_CDECL napi_fast_value_unwrap(napi_fast_value v, const void* expected_type_tag);
 
 // True iff the value is null or undefined (fast-safe).
 NAPI_EXTERN bool NAPI_CDECL napi_fast_value_is_nullish(napi_fast_value v);

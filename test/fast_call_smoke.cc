@@ -53,8 +53,14 @@ struct Ctx {
 
 // --- fast callbacks (v8-free) ----------------------------------------------
 
+// Per-class type tags (their addresses are the tokens). kOtherTag simulates a
+// different native handle class for the type-confusion test. Use a >=2-aligned
+// type (int) — napi_fast_wrap stores the tag as a V8 aligned pointer.
+const int kCalcTag = 0;
+const int kOtherTag = 0;
+
 double add_fast(napi_fast_recv recv, double a, double b) {
-    Ctx* c = static_cast<Ctx*>(napi_fast_unwrap(recv));
+    Ctx* c = static_cast<Ctx*>(napi_fast_unwrap(recv, &kCalcTag));
     if (c) {
         c->fast_calls++;
         c->last_sum = a + b;
@@ -63,7 +69,7 @@ double add_fast(napi_fast_recv recv, double a, double b) {
 }
 
 double sumf32_fast(napi_fast_recv recv, napi_fast_value arr) {
-    Ctx* c = static_cast<Ctx*>(napi_fast_unwrap(recv));
+    Ctx* c = static_cast<Ctx*>(napi_fast_unwrap(recv, &kCalcTag));
     uint8_t scratch[64];
     void* data = nullptr;
     size_t len = 0;
@@ -84,7 +90,7 @@ double sumf32_fast(napi_fast_recv recv, napi_fast_value arr) {
 // Returns the last_sum of another wrapped handle passed as an argument.
 double peek_fast(napi_fast_recv recv, napi_fast_value other) {
     (void)recv;
-    Ctx* o = static_cast<Ctx*>(napi_fast_value_unwrap(other));
+    Ctx* o = static_cast<Ctx*>(napi_fast_value_unwrap(other, &kCalcTag));
     return o ? o->last_sum : -999;
 }
 
@@ -93,7 +99,14 @@ double peek_fast(napi_fast_recv recv, napi_fast_value other) {
 // reserved internal field is unset) yields NULL rather than a garbage pointer.
 double isnull_fast(napi_fast_recv recv, napi_fast_value v) {
     (void)recv;
-    return napi_fast_value_unwrap(v) == nullptr ? 1.0 : 0.0;
+    return napi_fast_value_unwrap(v, &kCalcTag) == nullptr ? 1.0 : 0.0;
+}
+
+// Receiver-side probe: 1 if napi_fast_unwrap(recv, kCalcTag) is NULL, else 0.
+// Drives the type-confusion (wrong tag), non-object-receiver and post-remove_wrap
+// checks — all on the optimized fast path.
+double selfnull_fast(napi_fast_recv recv) {
+    return napi_fast_unwrap(recv, &kCalcTag) == nullptr ? 1.0 : 0.0;
 }
 
 // wants_options=true: recover the bound data via the options handle.
@@ -143,10 +156,10 @@ napi_value generic_slow(napi_env env, napi_callback_info info) {
     (void)info;
 }
 
-// Wrap a fresh Calc instance carrying `ctx`, return it.
-napi_status make_handle(napi_env env, napi_value cls, Ctx* ctx, napi_value* out) {
+// Wrap a fresh Calc instance carrying `ctx` with type tag `tag`, return it.
+napi_status make_handle(napi_env env, napi_value cls, Ctx* ctx, const void* tag, napi_value* out) {
     CHECK(napi_new_instance(env, cls, 0, nullptr, out));
-    CHECK(napi_fast_wrap(env, *out, ctx, nullptr, nullptr, nullptr));
+    CHECK(napi_fast_wrap(env, *out, ctx, tag, nullptr, nullptr, nullptr));
     return napi_ok;
 }
 
@@ -227,8 +240,29 @@ int main() {
     other_ctx.last_sum = 42.5;
 
     napi_value calc = nullptr, other = nullptr;
-    CHECK(make_handle(env, cls, &calc_ctx, &calc));
-    CHECK(make_handle(env, cls, &other_ctx, &other));
+    CHECK(make_handle(env, cls, &calc_ctx, &kCalcTag, &calc));
+    CHECK(make_handle(env, cls, &other_ctx, &kCalcTag, &other));
+
+    // Same Calc class (same JS shape) but wrapped with a DIFFERENT type tag, to
+    // simulate a foreign native handle for the type-confusion test (#1).
+    Ctx cross_ctx;
+    cross_ctx.last_sum = 7.0;
+    napi_value cross = nullptr;
+    CHECK(make_handle(env, cls, &cross_ctx, &kOtherTag, &cross));
+
+    // A handle to napi_remove_wrap mid-life, for the stale-field test (#3).
+    Ctx removable_ctx;
+    removable_ctx.last_sum = 5.0;
+    napi_value removable = nullptr;
+    CHECK(make_handle(env, cls, &removable_ctx, &kCalcTag, &removable));
+
+    // A correctly-tagged handle with NO own JS properties — same hidden class as
+    // `cross`/`removable` (which also only carry prototype methods). The fast
+    // call site is warmed on `bare` so the SAME-shape `cross`/`removable` stay on
+    // the fast path (warming on `calc`, which has own method props, would deopt).
+    Ctx bare_ctx;
+    napi_value bare = nullptr;
+    CHECK(make_handle(env, cls, &bare_ctx, &kCalcTag, &bare));
 
     const napi_fast_type add_args[] = {napi_fast_receiver, napi_fast_float64, napi_fast_float64};
     const napi_fast_signature add_sig{napi_fast_float64, 3, add_args, false};
@@ -269,6 +303,15 @@ int main() {
         CHECK(napi_set_named_property(env, calc, "ov", fn));
     }
 
+    // selfnull lives on the class PROTOTYPE so calc/cross/removable share it at
+    // the same JS shape — that keeps the optimized call site monomorphic so the
+    // wrong-tag receiver still hits the fast path (the point of the test).
+    napi_value proto = nullptr;
+    CHECK(napi_get_named_property(env, cls, "prototype", &proto));
+    const napi_fast_signature selfnull_sig{napi_fast_float64, 1, recv_only, false};
+    CHECK(define_method(env, proto, "selfnull", generic_slow, &selfnull_sig,
+                        reinterpret_cast<const void*>(&selfnull_fast)));
+
     // A define_class instance that is NOT napi_fast_wrap'd: its reserved internal
     // field 0 is unset. Passing it to value_unwrap probes the UB case.
     napi_value raw = nullptr;
@@ -279,6 +322,9 @@ int main() {
     CHECK(napi_set_named_property(env, global, "calc", calc));
     CHECK(napi_set_named_property(env, global, "other", other));
     CHECK(napi_set_named_property(env, global, "raw", raw));
+    CHECK(napi_set_named_property(env, global, "cross", cross));
+    CHECK(napi_set_named_property(env, global, "removable", removable));
+    CHECK(napi_set_named_property(env, global, "bare", bare));
 
     // --- A-tier: numeric add, forced into the fast path -------------------
     {
@@ -364,6 +410,63 @@ int main() {
         CHECK(napi_get_value_double(env, e1, &b));
         EXPECT(a == 50.0, "overload ov(a) resolved to the 1-arg fast fn");
         EXPECT(b == 11.0, "overload ov(a,b) resolved to the 2-arg fast fn");
+    }
+
+    // --- HARDENING #1: type-tag blocks cross-class confusion on the fast path
+    // `ps` is optimized on `calc`; `cross` is the SAME JS shape (Calc instance)
+    // so the call site stays monomorphic and `ps(cross)` still hits the fast
+    // path — but its tag is kOtherTag, so the unwrap must reject it.
+    {
+        const char* js =
+                "function ps(o){return o.selfnull();}"
+                "%PrepareFunctionForOptimization(ps);"
+                "ps(bare); ps(bare);"
+                "%OptimizeFunctionOnNextCall(ps);"
+                "[ps(bare), ps(cross)];";
+        napi_value r = nullptr, e0 = nullptr, e1 = nullptr;
+        CHECK(run(env, js, &r));
+        CHECK(napi_get_element(env, r, 0, &e0));
+        CHECK(napi_get_element(env, r, 1, &e1));
+        double proper = 0, wrong = 0;
+        CHECK(napi_get_value_double(env, e0, &proper));
+        CHECK(napi_get_value_double(env, e1, &wrong));
+        EXPECT(proper == 0.0, "correctly-tagged receiver unwraps on the fast path");
+        EXPECT(wrong == 1.0, "wrong-tag receiver blocked -> NULL (type confusion prevented)");
+    }
+
+    // --- HARDENING #3: napi_remove_wrap clears the fast field (no UAF) ------
+    // Read the fast slot directly (the helper is a plain internal-field read,
+    // valid outside a fast call too). napi_remove_wrap deletes the wrapper
+    // private property, which transitions the object's hidden class, so a
+    // fast-path probe would just deopt — the field state is what matters here.
+    {
+        void* before = napi_fast_unwrap(reinterpret_cast<napi_fast_recv>(removable), &kCalcTag);
+        EXPECT(before == &removable_ctx, "fast slot holds the native pointer before remove_wrap");
+        void* removed = nullptr;
+        CHECK(napi_remove_wrap(env, removable, &removed));
+        EXPECT(removed == &removable_ctx, "napi_remove_wrap returned the native pointer");
+        void* after = napi_fast_unwrap(reinterpret_cast<napi_fast_recv>(removable), &kCalcTag);
+        EXPECT(after == nullptr, "after napi_remove_wrap the fast slot reads NULL (no use-after-remove)");
+    }
+
+    // --- HARDENING #2: non-object receiver must not crash ------------------
+    // Reaching the assertion at all proves no crash (an unguarded read of a
+    // primitive's "internal field" would fault). 1 = fast path took the guard;
+    // 0 = V8 chose the slow path for the string receiver. Either is acceptable.
+    {
+        const char* js =
+                "String.prototype.selfnull = calc.selfnull;"
+                "function psr(s){return s.selfnull();}"
+                "%PrepareFunctionForOptimization(psr);"
+                "psr('a'); psr('a');"
+                "%OptimizeFunctionOnNextCall(psr);"
+                "psr('b');";
+        napi_value r = nullptr;
+        CHECK(run(env, js, &r));
+        double s = -1;
+        CHECK(napi_get_value_double(env, r, &s));
+        std::printf("  [info] non-object receiver selfnull -> %g\n", s);
+        EXPECT(s == 0.0 || s == 1.0, "non-object (string) receiver: no crash");
     }
 
     // --- ADVERSARIAL: unwrap an UNSET internal field (not fast_wrap'd) ------
