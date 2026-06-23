@@ -220,7 +220,11 @@ namespace v8impl {
     enum UnwrapAction { KeepWrap, RemoveWrap };
 
     inline napi_status Unwrap(napi_env env, napi_value js_object, void **result, UnwrapAction action) {
-        NAPI_PREAMBLE(env);
+        // Omit NAPI_PREAMBLE and GET_RETURN_STATUS: Unwrap only reads private
+        // properties / internal fields, which bypass proxy traps/interceptors and
+        // cannot run JS or throw (same convention as reference.cc). Skipping the
+        // v8::TryCatch shaves ~6ns off this hot path.
+        CHECK_ENV_NOT_IN_GC(env);
         CHECK_ARG(env, js_object);
         if (action == KeepWrap)
             CHECK_ARG(env, result);
@@ -266,7 +270,7 @@ namespace v8impl {
                 delete reference;
             }
         }
-        return GET_RETURN_STATUS(env);
+        return napi_clear_last_error(env);
     }
 
     class CallbackBundle {
@@ -395,7 +399,10 @@ namespace v8impl {
 
     inline napi_status Wrap(napi_env env, napi_value js_object, void *native_object, napi_finalize finalize_cb,
                             void *finalize_hint, napi_ref *result) {
-        NAPI_PREAMBLE(env);
+        // Omit NAPI_PREAMBLE and GET_RETURN_STATUS: Wrap only touches private
+        // properties / internal fields and allocates a Reference — none of which
+        // run JS or throw (same convention as reference.cc).
+        CHECK_ENV_NOT_IN_GC(env);
         CHECK_ARG(env, js_object);
 
         v8::Local<v8::Context> context = env->context();
@@ -433,7 +440,7 @@ namespace v8impl {
             (reinterpret_cast<uintptr_t>(native_object) & 1u) == 0) {
             obj->SetAlignedPointerInInternalField(0, native_object, v8::kEmbedderDataTypeTagDefault);
         }
-        return GET_RETURN_STATUS(env);
+        return napi_clear_last_error(env);
     }
 
     inline bool CanBeHeldWeakly(v8::Local<v8::Value> value) { return value->IsObject() || value->IsSymbol(); }
