@@ -1,0 +1,5 @@
+# Engine-agnostic common sources (shared by the GN/V8 and CMake/non-V8 tracks).
+# fast_call_fallback.cc self-guards on NAPI_HAS_FAST_CALL: it is an empty TU in
+# the V8 build (real impl lives in src/v8/fast_call.cc) and the slow-equivalent
+# fallback on non-V8 backends.
+fast_call_fallback.cc

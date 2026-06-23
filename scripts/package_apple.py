@@ -99,6 +99,7 @@ def umbrella(fw: str, v8_headers: bool) -> str:
         f"#define {guard}",
         '#include "napi/js_native_api.h"',
         '#include "napi/node_api.h"',
+        '#include "napi/fast_call.h"',
         '#include "napi_v8/embedding.h"',
     ]
     if v8_headers:

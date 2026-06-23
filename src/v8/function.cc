@@ -84,6 +84,12 @@ napi_status NAPI_CDECL napi_define_class(napi_env env, const char *utf8name, siz
     v8::Local<v8::FunctionTemplate> tpl;
     STATUS_CALL(v8impl::FunctionCallbackWrapper::NewTemplate(env, constructor, callback_data, &tpl));
 
+    // Reserve one internal field on every instance so it can carry a
+    // fast-call-readable native pointer (see napi_fast_wrap / napi_fast_unwrap
+    // in fast_call.cc). Invisible to JS; napi_wrap still uses a private property,
+    // so this is additive and backward-compatible. (FAST_CALL_PLAN.md D1.)
+    tpl->InstanceTemplate()->SetInternalFieldCount(1);
+
     v8::Local<v8::String> name_string;
     CHECK_NEW_FROM_UTF8_LEN(env, name_string, utf8name, length);
     tpl->SetClassName(name_string);

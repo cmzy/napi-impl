@@ -13,6 +13,7 @@ config("napi_flags") {
     "NAPI_EXPERIMENTAL",
     "BUILDING_NODE_EXTENSION",
     "NAPI_VERSION=10",       # expose node_api_* (v9/v10) symbols as extern "C"
+    "NAPI_HAS_FAST_CALL=1",  # V8 (GN) track takes the real fast-call path; non-V8 (CMake) does not
   ]
   include_dirs = [
     "//napi/include",

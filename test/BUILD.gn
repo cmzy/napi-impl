@@ -18,7 +18,17 @@ executable("runner") {
   deps = [ "//napi/src/v8:napi_v8" ]
 }
 
+executable("fast_call_smoke") {
+  testonly = true
+  sources = [ "fast_call_smoke.cc" ]
+  configs += [
+    "//napi/gn:napi_flags",
+    "//:external_config",
+  ]
+  deps = [ "//napi/src/v8:napi_v8" ]
+}
+
 group("test") {
   testonly = true
-  deps = [ ":run", ":runner" ]
+  deps = [ ":run", ":runner", ":fast_call_smoke" ]
 }

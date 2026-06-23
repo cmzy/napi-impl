@@ -336,6 +336,20 @@ namespace v8impl {
             napi_callback_info cbinfo_wrapper = reinterpret_cast<napi_callback_info>(this);
             napi_env env = bundle_->env;
             napi_callback cb = bundle_->cb;
+            // On construction of an object that reserves a fast-call native slot
+            // (internal field 0; every napi_define_class instance does, see
+            // function.cc / fast_call.cc), initialize it to nullptr *before*
+            // running the user constructor (which may napi_fast_wrap and thus
+            // overwrite it). Without this, napi_fast_unwrap on an instance that
+            // was never napi_fast_wrap'd reads an uninitialized aligned-pointer
+            // field — V8 undefined behavior yielding a garbage pointer. The
+            // IsConstructCall() guard keeps the (hot) method-call path free.
+            if (cbinfo_.IsConstructCall()) {
+                v8::Local<v8::Object> self = cbinfo_.This();
+                if (self->InternalFieldCount() >= 1) {
+                    self->SetAlignedPointerInInternalField(0, nullptr);
+                }
+            }
             napi_value result = nullptr;
             bool exceptionOccurred = false;
             env->CallIntoModule([&](napi_env env) { result = cb(env, cbinfo_wrapper); },

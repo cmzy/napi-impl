@@ -4,6 +4,7 @@ arraybuffer.cc
 bigint.cc
 date.cc
 error.cc
+fast_call.cc
 function.cc
 instance.cc
 internals.cc

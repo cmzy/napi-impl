@@ -37,6 +37,17 @@ EMBEDDING_COMMON = [
     "napi_v8_run_event_loop_tasks",
     # node_api_* extensions we implement beyond js_native_api proper.
     "node_api_post_finalizer",
+    # Fast-call surface (napi/fast_call.h). Cross-engine: V8 takes the real fast
+    # path, other backends export a slow-equivalent fallback, so the same
+    # consumer source links everywhere.
+    "napi_create_fast_function",
+    "napi_create_fast_function_overloads",
+    "napi_fast_wrap",
+    "napi_fast_unwrap",
+    "napi_fast_value_unwrap",
+    "napi_fast_value_is_nullish",
+    "napi_fast_get_buffersource",
+    "napi_fast_options_get_data",
 ]
 
 # V8-only embedding extensions (inspector + SharedArrayBuffer); other engines do

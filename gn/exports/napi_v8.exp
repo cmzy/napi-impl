@@ -21,6 +21,8 @@ _napi_create_env
 _napi_create_error
 _napi_create_external
 _napi_create_external_arraybuffer
+_napi_create_fast_function
+_napi_create_fast_function_overloads
 _napi_create_function
 _napi_create_int32
 _napi_create_int64
@@ -47,6 +49,12 @@ _napi_destroy_platform
 _napi_destroy_runtime
 _napi_detach_arraybuffer
 _napi_escape_handle
+_napi_fast_get_buffersource
+_napi_fast_options_get_data
+_napi_fast_unwrap
+_napi_fast_value_is_nullish
+_napi_fast_value_unwrap
+_napi_fast_wrap
 _napi_get_all_property_names
 _napi_get_and_clear_last_exception
 _napi_get_array_length

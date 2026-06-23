@@ -23,6 +23,8 @@
     napi_create_error;
     napi_create_external;
     napi_create_external_arraybuffer;
+    napi_create_fast_function;
+    napi_create_fast_function_overloads;
     napi_create_function;
     napi_create_int32;
     napi_create_int64;
@@ -49,6 +51,12 @@
     napi_destroy_runtime;
     napi_detach_arraybuffer;
     napi_escape_handle;
+    napi_fast_get_buffersource;
+    napi_fast_options_get_data;
+    napi_fast_unwrap;
+    napi_fast_value_is_nullish;
+    napi_fast_value_unwrap;
+    napi_fast_wrap;
     napi_get_all_property_names;
     napi_get_and_clear_last_exception;
     napi_get_array_length;
