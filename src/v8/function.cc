@@ -84,13 +84,16 @@ napi_status NAPI_CDECL napi_define_class(napi_env env, const char *utf8name, siz
     v8::Local<v8::FunctionTemplate> tpl;
     STATUS_CALL(v8impl::FunctionCallbackWrapper::NewTemplate(env, constructor, callback_data, &tpl));
 
-    // Reserve two internal fields on every instance for fast-call reads:
-    // field 0 = native pointer, field 1 = per-class type tag (lets the fast
-    // unwrap helpers reject a wrong-class receiver — see napi_fast_wrap /
-    // napi_fast_unwrap in fast_call.cc). Invisible to JS; napi_wrap still uses a
-    // private property, so this is additive and backward-compatible.
-    // (FAST_CALL_PLAN.md D1 / §7.1 hardening.)
-    tpl->InstanceTemplate()->SetInternalFieldCount(2);
+    // Reserve three internal fields on every instance:
+    //   field 0 = native pointer (napi_unwrap fast path + fast-call reads),
+    //   field 1 = per-class type tag (fast unwrap rejects a wrong-class receiver,
+    //             see napi_fast_wrap / napi_fast_unwrap in fast_call.cc),
+    //   field 2 = Reference* (lets napi_wrap/napi_unwrap/napi_remove_wrap store the
+    //             wrap state in fields and skip the private property entirely — no
+    //             External alloc, no SetPrivate; see Wrap/Unwrap in the impl header).
+    // Invisible to JS; arbitrary objects (no fields) still use the private
+    // property, so this stays backward-compatible. (FAST_CALL_PLAN.md D1 / §7.1.)
+    tpl->InstanceTemplate()->SetInternalFieldCount(3);
 
     v8::Local<v8::String> name_string;
     CHECK_NEW_FROM_UTF8_LEN(env, name_string, utf8name, length);

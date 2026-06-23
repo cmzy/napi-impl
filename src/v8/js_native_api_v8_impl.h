@@ -233,14 +233,13 @@ namespace v8impl {
         RETURN_STATUS_IF_FALSE(env, value->IsObject(), napi_invalid_arg);
         v8::Local<v8::Object> obj = value.As<v8::Object>();
 
-        // Fast path: napi_wrap mirrors the native pointer into internal field 0
-        // for objects that reserve one (every napi_define_class instance). A
-        // non-null slot means the object is wrapped, so we can return the pointer
-        // with an O(1) field read instead of a private-property lookup. RemoveWrap
-        // needs the Reference*, so it skips this and takes the slow path below.
-        // (Note we have not materialized env->context() yet — the fast path needs
-        // no context, so we defer that handle work to the slow path.)
-        if (action == KeepWrap && obj->InternalFieldCount() >= 1) {
+        const bool use_fields = obj->InternalFieldCount() >= 3;
+
+        // Fast path (KeepWrap): napi_wrap mirrors the native into internal field 0,
+        // so return it with a single O(1) read. A null slot means a wrap with a
+        // null native, handled by the field-2 path below. (env->context() is not
+        // materialized yet — neither the fast path nor the field path needs it.)
+        if (action == KeepWrap && use_fields) {
             void *p = obj->GetAlignedPointerFromInternalField(0, v8::kEmbedderDataTypeTagDefault);
             if (p != nullptr) {
                 *result = p;
@@ -248,6 +247,30 @@ namespace v8impl {
             }
         }
 
+        // Field-based wrap (our define_class instances): the Reference* in field 2
+        // is the source of truth — no private-property lookup, no External.
+        if (use_fields) {
+            Reference *reference = static_cast<v8impl::Reference *>(
+                    obj->GetAlignedPointerFromInternalField(2, v8::kEmbedderDataTypeTagDefault));
+            RETURN_STATUS_IF_FALSE(env, reference != nullptr, napi_invalid_arg);
+            if (result)
+                *result = reference->Data();
+            if (action == RemoveWrap) {
+                // Clear all three fields so a still-live JS object can't hand a
+                // now-removed (possibly freed) pointer to napi_fast_unwrap.
+                obj->SetAlignedPointerInInternalField(0, nullptr, v8::kEmbedderDataTypeTagDefault);
+                obj->SetAlignedPointerInInternalField(1, nullptr, v8::kEmbedderDataTypeTagDefault);
+                obj->SetAlignedPointerInInternalField(2, nullptr, v8::kEmbedderDataTypeTagDefault);
+                if (reference->ownership() == ReferenceOwnership::kUserland) {
+                    reference->ResetFinalizer();
+                } else {
+                    delete reference;
+                }
+            }
+            return napi_clear_last_error(env);
+        }
+
+        // Arbitrary object: private-property path.
         v8::Local<v8::Context> context = env->context();
         auto val = obj->GetPrivate(context, NAPI_PRIVATE_KEY(context, wrapper)).ToLocalChecked();
         RETURN_STATUS_IF_FALSE(env, val->IsExternal(), napi_invalid_arg);
@@ -258,14 +281,6 @@ namespace v8impl {
 
         if (action == RemoveWrap) {
             CHECK(obj->DeletePrivate(context, NAPI_PRIVATE_KEY(context, wrapper)).FromJust());
-            // Also clear the fast-call mirror (fields 0=native, 1=type tag) so a
-            // still-live JS object can't hand a now-removed (possibly freed)
-            // pointer to napi_fast_unwrap — i.e. no use-after-remove via fast call.
-            int fields = obj->InternalFieldCount();
-            if (fields >= 1)
-                obj->SetAlignedPointerInInternalField(0, nullptr, v8::kEmbedderDataTypeTagDefault);
-            if (fields >= 2)
-                obj->SetAlignedPointerInInternalField(1, nullptr, v8::kEmbedderDataTypeTagDefault);
             if (reference->ownership() == ReferenceOwnership::kUserland) {
                 reference->ResetFinalizer();
             } else {
@@ -379,6 +394,8 @@ namespace v8impl {
                     self->SetAlignedPointerInInternalField(0, nullptr, v8::kEmbedderDataTypeTagDefault);
                 if (fields >= 2)
                     self->SetAlignedPointerInInternalField(1, nullptr, v8::kEmbedderDataTypeTagDefault);
+                if (fields >= 3)
+                    self->SetAlignedPointerInInternalField(2, nullptr, v8::kEmbedderDataTypeTagDefault);
             }
             napi_value result = nullptr;
             bool exceptionOccurred = false;
@@ -407,13 +424,27 @@ namespace v8impl {
         CHECK_ENV_NOT_IN_GC(env);
         CHECK_ARG(env, js_object);
 
-        v8::Local<v8::Context> context = env->context();
         v8::Local<v8::Value> value = v8impl::V8LocalValueFromJsValue(js_object);
         RETURN_STATUS_IF_FALSE(env, value->IsObject(), napi_invalid_arg);
         v8::Local<v8::Object> obj = value.As<v8::Object>();
 
-        RETURN_STATUS_IF_FALSE(env, !obj->HasPrivate(context, NAPI_PRIVATE_KEY(context, wrapper)).FromJust(),
-                               napi_invalid_arg);
+        // Our napi_define_class instances reserve 3 internal fields
+        // (0=native, 1=type tag, 2=Reference*). For them, store the wrap state in
+        // fields and skip the private property entirely (no External allocation,
+        // no SetPrivate property mutation). Any other object keeps the
+        // private-property path, so napi_wrap still works on arbitrary objects.
+        const bool use_fields = obj->InternalFieldCount() >= 3;
+
+        // Reject a double wrap (field 2 non-null, or the private property exists).
+        if (use_fields) {
+            RETURN_STATUS_IF_FALSE(
+                    env, obj->GetAlignedPointerFromInternalField(2, v8::kEmbedderDataTypeTagDefault) == nullptr,
+                    napi_invalid_arg);
+        } else {
+            v8::Local<v8::Context> context = env->context();
+            RETURN_STATUS_IF_FALSE(env, !obj->HasPrivate(context, NAPI_PRIVATE_KEY(context, wrapper)).FromJust(),
+                                   napi_invalid_arg);
+        }
 
         v8impl::Reference *reference = nullptr;
         if (result != nullptr) {
@@ -429,18 +460,17 @@ namespace v8impl {
                     v8impl::ReferenceWithData::New(env, obj, 0, v8impl::ReferenceOwnership::kRuntime, native_object);
         }
 
-        CHECK(obj->SetPrivate(context, NAPI_PRIVATE_KEY(context, wrapper), v8::External::New(env->isolate, reference))
-                      .FromJust());
-
-        // Mirror the native pointer into internal field 0 (when the object
-        // reserves one — every napi_define_class instance does) so napi_unwrap can
-        // retrieve it with an O(1) field read instead of a private-property
-        // lookup. Only 2-byte-aligned, non-null pointers fit an aligned-pointer
-        // slot; anything else simply isn't mirrored and falls back to the slow
-        // path (correctness preserved, just not accelerated).
-        if (obj->InternalFieldCount() >= 1 && native_object != nullptr &&
-            (reinterpret_cast<uintptr_t>(native_object) & 1u) == 0) {
-            obj->SetAlignedPointerInInternalField(0, native_object, v8::kEmbedderDataTypeTagDefault);
+        if (use_fields) {
+            // Reference* (always >= 2-byte aligned, from operator new) in field 2;
+            // native in field 0 for the napi_unwrap fast path (if aligned).
+            obj->SetAlignedPointerInInternalField(2, reference, v8::kEmbedderDataTypeTagDefault);
+            if (native_object != nullptr && (reinterpret_cast<uintptr_t>(native_object) & 1u) == 0)
+                obj->SetAlignedPointerInInternalField(0, native_object, v8::kEmbedderDataTypeTagDefault);
+        } else {
+            v8::Local<v8::Context> context = env->context();
+            CHECK(obj->SetPrivate(context, NAPI_PRIVATE_KEY(context, wrapper),
+                                  v8::External::New(env->isolate, reference))
+                          .FromJust());
         }
         return napi_clear_last_error(env);
     }
