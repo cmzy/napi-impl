@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <climits>
+#include <cstdint>
 
 #include "napi/js_native_api.h"
 
@@ -229,6 +230,19 @@ namespace v8impl {
         RETURN_STATUS_IF_FALSE(env, value->IsObject(), napi_invalid_arg);
         v8::Local<v8::Object> obj = value.As<v8::Object>();
 
+        // Fast path: napi_wrap mirrors the native pointer into internal field 0
+        // for objects that reserve one (every napi_define_class instance). A
+        // non-null slot means the object is wrapped, so we can return the pointer
+        // with an O(1) field read instead of a private-property lookup. RemoveWrap
+        // needs the Reference*, so it skips this and takes the slow path below.
+        if (action == KeepWrap && obj->InternalFieldCount() >= 1) {
+            void *p = obj->GetAlignedPointerFromInternalField(0, v8::kEmbedderDataTypeTagDefault);
+            if (p != nullptr) {
+                *result = p;
+                return napi_clear_last_error(env);
+            }
+        }
+
         auto val = obj->GetPrivate(context, NAPI_PRIVATE_KEY(context, wrapper)).ToLocalChecked();
         RETURN_STATUS_IF_FALSE(env, val->IsExternal(), napi_invalid_arg);
         Reference *reference = static_cast<v8impl::Reference *>(val.As<v8::External>()->Value());
@@ -408,6 +422,17 @@ namespace v8impl {
 
         CHECK(obj->SetPrivate(context, NAPI_PRIVATE_KEY(context, wrapper), v8::External::New(env->isolate, reference))
                       .FromJust());
+
+        // Mirror the native pointer into internal field 0 (when the object
+        // reserves one — every napi_define_class instance does) so napi_unwrap can
+        // retrieve it with an O(1) field read instead of a private-property
+        // lookup. Only 2-byte-aligned, non-null pointers fit an aligned-pointer
+        // slot; anything else simply isn't mirrored and falls back to the slow
+        // path (correctness preserved, just not accelerated).
+        if (obj->InternalFieldCount() >= 1 && native_object != nullptr &&
+            (reinterpret_cast<uintptr_t>(native_object) & 1u) == 0) {
+            obj->SetAlignedPointerInInternalField(0, native_object, v8::kEmbedderDataTypeTagDefault);
+        }
         return GET_RETURN_STATUS(env);
     }
 

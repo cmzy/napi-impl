@@ -104,9 +104,26 @@ namespace napi_v8_priv {
         // are inside an Isolate::Scope at this point).
         v8::Isolate *iso = v8::Isolate::GetCurrent();
         (void) ctx;
-        const char *name = (kind == PrivateKeyKind::wrapper) ? "node:napi_v8::wrapper" : "node:napi_v8::type_tag";
-        v8::Local<v8::String> s = v8::String::NewFromUtf8(iso, name, v8::NewStringType::kInternalized).ToLocalChecked();
-        return v8::Private::ForApi(iso, s);
+        // Cache the two Privates per isolate: v8::Private::ForApi does a string
+        // intern + private-symbol registry lookup, and this is on the hot
+        // napi_wrap/napi_unwrap/type_tag path. A V8 isolate is single-threaded and
+        // bound to one thread, so a thread_local cache keyed by the isolate is
+        // correct (the isolate check handles the rare multi-isolate-per-thread
+        // case). v8::Eternal lives for the isolate's lifetime.
+        static thread_local v8::Isolate *cached_iso = nullptr;
+        static thread_local v8::Eternal<v8::Private> cached_wrapper;
+        static thread_local v8::Eternal<v8::Private> cached_type_tag;
+        if (cached_iso != iso) {
+            cached_iso = iso;
+            auto mk = [iso](const char *name) {
+                v8::Local<v8::String> s =
+                        v8::String::NewFromUtf8(iso, name, v8::NewStringType::kInternalized).ToLocalChecked();
+                return v8::Private::ForApi(iso, s);
+            };
+            cached_wrapper.Set(iso, mk("node:napi_v8::wrapper"));
+            cached_type_tag.Set(iso, mk("node:napi_v8::type_tag"));
+        }
+        return (kind == PrivateKeyKind::wrapper) ? cached_wrapper.Get(iso) : cached_type_tag.Get(iso);
     }
 
 } // namespace napi_v8_priv
