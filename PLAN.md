@@ -642,6 +642,43 @@ else:                                    # hermes / jsc / quickjs
 
 ---
 
+## M8 — JSC 集成
+
+**目标：** 把 `napi_*` 后端接到 JavaScriptCore，产物 `libnapi_jsc` 与 `libnapi_v8` / `libnapi_hermes` 同 ABI 可互换。
+
+**实现策略（关键决策）：策略 B —— 在 JSC 的 C API 上自己手写 `js_native_api`。**
+
+- 与 Hermes 不同：**JSC 不自带 Node-API**（Hermes 的 `hermesNodeApi` 是策略 A 的前提，JSC 没有等价物）。因此 JSC 必须像 V8 那样把整套 `napi_*` 手写在引擎公开 API 上——只是底座从 `v8.h` 换成 JSC 的稳定 C API（`JSValueRef` / `JSObjectRef` / `JSStringRef`，头 `<JavaScriptCore/JavaScript.h>`）。
+- **J1 引擎来源：苹果系统 `JavaScriptCore.framework`**（macOS/iOS 自带，无需拉取/构建/vendoring）。因为 JSC 是**动态系统框架**（不像 V8 monolith / Hermes 静态归档被吞入），它始终是外部动态依赖——`otool -L` 可见，符号不会被吸收进我们的 dylib。Linux/Android/Windows 需要自构建 WebKit JSC，属 J2。
+- **唯一新写的 C++**：`src/jsc/`——`js_native_api_jsc.{h,cc}`（core）+ `jsc_object.cc`（对象/函数/类/wrap/引用/promise）+ `napi_jsc_engine.cc`（embedding 适配层，把 `JSContextGroupRef`→`napi_runtime`、`JSGlobalContextRef`→`napi_env` 映射到项目统一的 `napi_create_platform/runtime/env` + tick 钩子）。
+- 构建走 CMake 轨（与 Hermes 同），`cmake/modules/FindJSC.cmake` 定位系统框架并导出 `JSC::JSC`；`build.py --engine=jsc` 分流。
+
+**值模型与生命周期：**
+
+- `napi_value` **即** `JSValueRef`（reinterpret_cast）。每个交出的值都 `JSValueProtect` 并记入当前 handle scope，关 scope 时统一 `JSValueUnprotect`。env 创建时开一个 root scope，承载 host 在显式 scope 之外创建的值。
+- 异常：env 持有 `pending_exception`；JSC 各调用的 `JSValueRef* exception` out 参被收口为「pending」，`napi_get_and_clear_last_exception` 取走。
+- external / `napi_wrap`：用一个带 finalize 回调的自定义 `JSClass`（holder 对象，private 挂 native 指针 + finalizer）。wrap 把 holder 以一个隐藏 Symbol 键挂到目标对象上——目标被 GC 时 holder 随之被回收触发 finalize，finalizer **不在 GC 中重入 JS**，而是入队、由 tick（`napi_v8_run_event_loop_tasks`）与 env 销毁时 drain（镜像 Hermes 的 second-pass 思路）。
+- 函数 / `napi_define_class`：用带 `callAsFunction` / `callAsConstructor` 的自定义 `JSClass`（private 挂 `napi_callback` + data）。属性/访问器/特性统一经缓存的 `Object.defineProperty` 落地（C API 无直接定义访问器的入口）。
+
+**任务清单：**
+
+- [x] `cmake/modules/FindJSC.cmake`（Apple 系统框架，导出 `JSC::JSC`）
+- [x] 顶层 `src/CMakeLists.txt` 的 `jsc` 分流 + `src/jsc/CMakeLists.txt` + `sources.txt`
+- [x] `src/jsc/napi_jsc_engine.cc`（embedding 适配层）
+- [x] `src/jsc/js_native_api_jsc.{h,cc}` + `jsc_object.cc`（手写 napi 面）
+- [x] `scripts/build.py` 启用 `--engine=jsc`（macOS CMake 分流；无引擎预构建）
+- [x] `scripts/gen_export_list.py` 支持 `--engine=jsc`；`gn/exports/napi_jsc.{lds,exp,def}`（139 符号，与 Hermes 表一致：同样略去 V8-only inspector+SAB）
+- [x] **J1 烟囱测试**：`test/jsc_smoke.cc`——`napi_run_script("1+2")==3`，外加字符串往返 / 对象属性 / JS 调原生函数；CTest `jsc_smoke` 通过（macOS x86_64）
+- [x] **符号纪律**：`nm -gU` 断言仅 139 个 `napi_*`/`node_api_*` 导出，零泄漏；`otool -L` 确认 JSC 为外部动态依赖
+
+**J1 覆盖范围：** 值（undefined/null/boolean/number/string utf8+utf16+latin1/symbol）、typeof/coerce/strict_equals、`run_script`、错误与异常（throw/create/syntax/pending/clear/last_error）、handle/escapable scope、对象与属性（named/keyed/element/property_names/prototype/freeze/seal/has_own）、数组、函数（create/call/new_instance/cb_info/new_target/instanceof/define_class/define_properties）、external/wrap/unwrap/remove_wrap/add_finalizer、引用、promise（deferred）、date、property key、instance_data。全套 ABI 符号均**有定义**（drop-in 互换），故导出列表干净链接。
+
+**J2（已 defined 为占位，返回明确状态而非崩溃，待补全）：** BigInt（JSC C API 无构造入口）、TypedArray / ArrayBuffer / DataView 的 create+info+detach、`type_tag` 系列、`get_all_property_names` 的 filter/mode/symbol 键、**弱引用**（J1 引用为强引用：`JSValueProtect` 全程保活，因 JSC 公开 C API 无弱句柄原语——故 wrap 配套的弱 ref 在 J1 下会过度保活，finalizer 仅在 env 销毁时触发；真正的 GC 弱语义留 J2）。跨平台（iOS/非 Apple 的 WebKit JSC 构建）与打包（xcframework）亦属 J2。
+
+**已验收（J1）：** `python3 scripts/build.py --engine=jsc --platform=mac --arch=x86_64` 产出 `out/build/jsc-mac-x86_64-release/src/jsc/libnapi_jsc.dylib`，仅导出 `napi_*`/`node_api_*`，`jsc_smoke` 端到端跑通。
+
+---
+
 ## 8. 风险与对策
 
 | 风险 | 影响 | 对策 |

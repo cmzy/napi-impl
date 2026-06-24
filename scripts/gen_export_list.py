@@ -121,7 +121,8 @@ def write_def(syms: list[str], path: Path):
 def main():
     import argparse
     ap = argparse.ArgumentParser()
-    ap.add_argument("--engine", default="v8", choices=["v8", "hermes"],
+    ap.add_argument("--engine", default="v8",
+                    choices=["v8", "hermes", "jsc", "quickjs"],
                     help="emit napi_<engine>.{lds,exp,def}")
     args = ap.parse_args()
 
