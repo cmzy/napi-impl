@@ -146,7 +146,14 @@ napi_status NAPI_CDECL napi_destroy_platform(napi_platform platform) {
 napi_status NAPI_CDECL napi_create_runtime(napi_platform platform, napi_runtime *result) {
     if (platform == nullptr || result == nullptr)
         return napi_invalid_arg;
-    auto config = hermes::vm::RuntimeConfig::Builder().build();
+    // Enable Hermes' internal microtask queue. With MicrotaskQueue=false (the
+    // default), the bundled Promise (InternalBytecode) schedules its reaction
+    // jobs through a host-provided `setImmediate`, which an embedding does not
+    // install — so the first Promise/queueMicrotask use throws
+    // "ReferenceError: Property 'setImmediate' doesn't exist". With it enabled,
+    // Promise.then enqueues onto the VM's internal job queue, which we drain via
+    // runtime->drainJobs() in napi_v8_run_event_loop_tasks (the per-tick hook).
+    auto config = hermes::vm::RuntimeConfig::Builder().withMicrotaskQueue(true).build();
     auto *r = new napi_runtime__();
     r->platform = platform;
     r->runtime = hermes::vm::Runtime::create(config);
