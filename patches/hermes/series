@@ -4,3 +4,4 @@
 0002-node-api-create-function-with-prototype.patch
 0003-node-api-adjust-external-memory.patch
 0004-node-api-remove-wrap-resets-finalizer.patch
+0005-node-api-finalizer-holder-erase-before-invoke.patch

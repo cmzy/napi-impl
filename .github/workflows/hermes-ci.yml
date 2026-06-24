@@ -35,7 +35,7 @@ on:
 
 # Baseline: see PLAN.md M7.2. Bump when the suite improves.
 env:
-  HERMES_MIN_PASS: '43'
+  HERMES_MIN_PASS: '44'
 
 jobs:
   linux:
