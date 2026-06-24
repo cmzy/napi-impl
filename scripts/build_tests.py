@@ -25,6 +25,9 @@ def lib_dir(platform: str, arch: str, config: str, engine: str = "v8") -> Path:
     if engine == "hermes":
         return (ROOT / "out" / "build"
                 / f"hermes-{platform}-{arch}-{config}" / "src" / "hermes")
+    if engine == "jsc":
+        return (ROOT / "out" / "build"
+                / f"jsc-{platform}-{arch}-{config}" / "src" / "jsc")
     return ROOT / "third_party" / "v8" / "out" / f"napi-{platform}-{arch}-{config}"
 
 
@@ -125,6 +128,8 @@ def build_one(name: str, sources, feature_dir: Path, libdir: Path,
 
     if (libdir / "libnapi_hermes.so").exists():
         lib_link_name = "napi_hermes"
+    elif (libdir / "libnapi_jsc.dylib").exists():
+        lib_link_name = "napi_jsc"
     elif (libdir / "libnapi_v8.so").exists():
         lib_link_name = "napi_v8"
     else:
@@ -172,7 +177,7 @@ def build_one(name: str, sources, feature_dir: Path, libdir: Path,
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--engine", default="v8", choices=["v8", "hermes"])
+    ap.add_argument("--engine", default="v8", choices=["v8", "hermes", "jsc"])
     ap.add_argument("--platform", default="mac")
     ap.add_argument("--arch", default="x86_64")
     ap.add_argument("--config", default="release")
@@ -182,7 +187,7 @@ def main():
 
     libdir = lib_dir(args.platform, args.arch, args.config, args.engine)
     lib_names = ("libNapiV8.dylib", "libnapi_v8.so", "napi_v8.dll",
-                 "libnapi_hermes.so")
+                 "libnapi_hermes.so", "libnapi_jsc.dylib")
     if not any((libdir / n).exists() for n in lib_names):
         sys.exit(f"napi library not found in {libdir} — run scripts/build.py first")
 

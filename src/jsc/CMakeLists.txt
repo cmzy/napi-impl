@@ -59,4 +59,18 @@ if(NAPI_JSC_BUILD_TESTS)
   add_executable(jsc_buffers_test ${NAPI_IMPL_ROOT}/test/jsc_buffers.cc)
   target_link_libraries(jsc_buffers_test PRIVATE napi_flags napi_jsc)
   add_test(NAME jsc_buffers COMMAND jsc_buffers_test)
+
+  # The upstream js-native-api host runner (test/runner.cc), built for JSC via
+  # NAPI_RUNNER_JSC: same engine-agnostic source as the V8/Hermes paths, with a
+  # JSGarbageCollect-backed gc(). Needs JSC::JSC directly (JSGarbageCollect) and
+  # the dl library (dlopen of each binding). scripts/run_tests.py --engine=jsc
+  # drives it. POSIX-only (pipe()/fork()).
+  if(NOT WIN32)
+    add_executable(runner ${NAPI_IMPL_ROOT}/test/runner.cc)
+    target_compile_definitions(runner PRIVATE NAPI_RUNNER_JSC)
+    target_link_libraries(runner PRIVATE napi_flags napi_jsc JSC::JSC ${CMAKE_DL_LIBS})
+    # Keep it a bare CLI executable (not a .app bundle) on iOS so scripts/run_tests
+    # finds it at src/jsc/runner and simctl spawn can exec it directly.
+    set_target_properties(runner PROPERTIES MACOSX_BUNDLE OFF)
+  endif()
 endif()
