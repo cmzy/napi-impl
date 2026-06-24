@@ -864,24 +864,21 @@ int main(int argc, char** argv) {
   }
 #endif
   CHK(napi_close_handle_scope(g_env, scope));
-#if defined(NAPI_RUNNER_NON_V8)
-  // Skip explicit engine teardown by default. The adapter fixes the main
-  // teardown use-after-free (deferred finalizer tasks outliving vm::Runtime),
-  // which makes env-cleanup-hook teardown work — but a residual Hermes UAF
-  // remains when many externals are finalized during ~Runtime after a forced GC
-  // (e.g. test_typedarray): finalizeAll virtual-calls a freed RefTracker still
-  // linked in the reference list. Until that's fixed upstream, default to
-  // skipping teardown (one test per process; exit reclaims everything). Set
-  // NAPI_RUNNER_FULL_TEARDOWN=1 to force teardown.
-  if (std::getenv("NAPI_RUNNER_FULL_TEARDOWN") == nullptr) {
+#if !defined(NAPI_RUNNER_NON_V8)
+  napi_v8_inspector_stop(g_env);
+#endif
+  // Full engine teardown. For the non-V8 engines this fires env-cleanup
+  // finalizers (test_general/testEnvCleanup needs them). The Hermes
+  // external-buffer teardown use-after-free that previously forced us to skip
+  // this — finalizeAll re-reading a freed reference from a finalizer holder
+  // after a forced GC, e.g. test_typedarray — is fixed by patches/hermes/0005.
+  // Escape hatch for debugging a teardown crash: NAPI_RUNNER_SKIP_TEARDOWN=1.
+  if (std::getenv("NAPI_RUNNER_SKIP_TEARDOWN") != nullptr) {
     std::fprintf(stderr, "[pass] %s\n", test_path);
     std::fflush(stdout);
     std::fflush(stderr);
     _exit(0);
   }
-#else
-  napi_v8_inspector_stop(g_env);
-#endif
   CHK(napi_destroy_env(g_env));
   CHK(napi_destroy_runtime(runtime));
   CHK(napi_destroy_platform(platform));

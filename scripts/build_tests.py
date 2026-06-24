@@ -126,7 +126,7 @@ def build_one(name: str, sources, feature_dir: Path, libdir: Path,
                 cxx = str(tc / f"aarch64-linux-android{api}-clang++")
         extra_flags = ["-fPIC"]
 
-    if (libdir / "libnapi_hermes.so").exists():
+    if (libdir / "libnapi_hermes.so").exists() or (libdir / "libnapi_hermes.dylib").exists():
         lib_link_name = "napi_hermes"
     elif (libdir / "libnapi_jsc.dylib").exists():
         lib_link_name = "napi_jsc"
@@ -187,7 +187,7 @@ def main():
 
     libdir = lib_dir(args.platform, args.arch, args.config, args.engine)
     lib_names = ("libNapiV8.dylib", "libnapi_v8.so", "napi_v8.dll",
-                 "libnapi_hermes.so", "libnapi_jsc.dylib")
+                 "libnapi_hermes.so", "libnapi_hermes.dylib", "libnapi_jsc.dylib")
     if not any((libdir / n).exists() for n in lib_names):
         sys.exit(f"napi library not found in {libdir} — run scripts/build.py first")
 

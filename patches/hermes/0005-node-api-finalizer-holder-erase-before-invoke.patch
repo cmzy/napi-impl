@@ -1,0 +1,37 @@
+Fix use-after-free in NodeApiFinalizerHolder::invokeAllFinalizers().
+
+The loop `while (!finalizers_.empty())` relies on invokeFinalizerFromGC()
+removing the reference from this holder's set. But it only unlinks via the
+reference's own finalizerHolder_ backlink, which for external-buffer finalizers
+(created with no JS value -> null backlink, added to a temporary holder in
+~NodeApiExternalBuffer via addFinalizer() without setting a backlink) does NOT
+point at this temporary holder. invokeFinalizerFromGC() also deletes the
+reference (kRuntime ownership). The freed pointer therefore stays in the set and
+the next iteration dereferences it (null vtable -> SIGSEGV) -- reproducible by
+GC-collecting an external ArrayBuffer then tearing down (js-native-api
+test_typedarray under full env teardown). Erase the element before invoking so
+the loop always makes progress regardless of backlink state.
+diff --git a/API/hermes_node_api/hermes_node_api.cpp b/API/hermes_node_api/hermes_node_api.cpp
+--- a/API/hermes_node_api/hermes_node_api.cpp
++++ b/API/hermes_node_api/hermes_node_api.cpp
+@@ -2255,9 +2255,17 @@
+ 
+ void NodeApiFinalizerHolder::invokeAllFinalizers() noexcept {
+   while (!finalizers_.empty()) {
+-    const auto &ref = finalizers_.begin();
+-    (*ref)->invokeFinalizerFromGC(); // Delegates to NodeApiEnvironment for API
+-                                     // version-dependent handling
++    // Remove the reference from this holder BEFORE invoking it. The loop relies
++    // on the set shrinking; invokeFinalizerFromGC() only unlinks via the
++    // reference's own finalizerHolder_ backlink, which for external-buffer
++    // finalizers (no JS value -> null backlink, added here via addFinalizer
++    // without a backlink) does NOT point at this temporary holder. It also may
++    // delete the reference (kRuntime ownership). Without erasing here the next
++    // iteration would re-read a freed pointer from finalizers_ (use-after-free).
++    NodeApiReference *ref = *finalizers_.begin();
++    finalizers_.erase(finalizers_.begin());
++    ref->invokeFinalizerFromGC(); // Delegates to NodeApiEnvironment for API
++                                  // version-dependent handling
+   }
+ }
+ 
