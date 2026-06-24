@@ -8,11 +8,24 @@
 // for libnapi_v8 / libnapi_hermes: the host uses the identical embedding API +
 // standard napi_* surface across engines.
 
+#include <cstdlib>
+
 #include <JavaScriptCore/JavaScript.h>
 
 #include "napi_v8/embedding.h"
 
 #include "js_native_api_jsc.h"
+
+// JSC disables SharedArrayBuffer by default (Spectre mitigation). The napi_v8/
+// sab.h extension needs it, so enable the engine option before JSC initializes
+// its Options (which it does lazily on first VM creation). A library
+// constructor runs at dlopen — earlier than the host's first napi_create_runtime
+// — and overwrite=0 leaves a host-set value untouched. If JSC is already
+// initialized by the host before we load, the SAB path falls back to an
+// ArrayBuffer-backed buffer (see jsc_v8compat.cc).
+__attribute__((constructor)) static void napi_jsc_enable_engine_features() {
+    setenv("JSC_useSharedArrayBuffer", "1", 0);
+}
 
 // ---- opaque embedding types ----------------------------------------------
 

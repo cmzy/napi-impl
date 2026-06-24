@@ -683,6 +683,21 @@ else:                                    # hermes / jsc / quickjs
 
 **已验收（J1）：** `python3 scripts/build.py --engine=jsc --platform=mac --arch=x86_64` 产出 `out/build/jsc-mac-x86_64-release/src/jsc/libnapi_jsc.dylib`，仅导出 `napi_*`/`node_api_*`，`jsc_smoke` 端到端跑通。
 
+### V8 专属 API 适配（已实现）
+
+V8 后端独有的两个项目扩展（`napi_v8/inspector.h` + `napi_v8/sab.h`，共 11 个 `napi_v8_*` 符号）已在 JSC 上做**真实适配**（非 stub）。导出列表因此从 139 → **150**；`gen_export_list.py` 对 `jsc` 与 `v8` 一样附带 `EMBEDDING_V8_ONLY` 集（hermes/quickjs 不带）。符号沿用 `napi_v8_` 前缀（与跨引擎的 `napi_v8_run_event_loop_tasks` 同理），令针对扩展头编写的消费者可链接任一 `libnapi_<engine>`。实现于 `src/jsc/jsc_v8compat.cc`。
+
+**Inspector（8 函数）—— 真实但走 JSC 自己的协议：**
+- `start` = `JSGlobalContextSetName`(置 `context_name`) + `JSGlobalContextSetInspectable(ctx,true)`（macOS 13.3+/iOS 16.4+，公开 API）。`stop` = `SetInspectable(false)`。这让 context **真的可调试**——经**系统 RemoteInspector** 传输，从 **Safari → 开发** 菜单接入（**WebKit Inspector 协议**，非 Chrome CDP / 非 `chrome://inspect`）。
+- 与 V8 路径的本质差异：JSC 无 TCP 端口、无主机驱动的消息泵。故 `port` 参数不适用（忽略）；`pump_messages`/`is_paused`/`wait`/`set_pause_handler`/`set_wake_handler` 是**诚实的 no-op**（JSC 用自管理的传输线程，主机无队列可抽，无公开暂停态查询）。handler 仅存档不回调。低版本 OS（无 `SetInspectable`）下 `start` 返回 `napi_generic_failure`。
+
+**SharedArrayBuffer（3 函数）—— 真实零拷贝：**
+- JSC 默认关闭 SAB（Spectre 缓解）。在 `napi_jsc_engine.cc` 的库 `__attribute__((constructor))` 里 `setenv("JSC_useSharedArrayBuffer","1",0)`（dlopen 即跑，早于宿主首个 VM 创建；overwrite=0 尊重宿主已设值），从而 `globalThis.SharedArrayBuffer` 可用。
+- `create` 经全局 `SharedArrayBuffer` 构造器产**真 SAB**（已验证 `__s.constructor.name === "SharedArrayBuffer"`），用 `JSObjectGetArrayBufferBytesPtr` 取后备指针返回；`is`=`instanceof SharedArrayBuffer`；`get_info`=`bytesPtr`+`byteLength`。**零拷贝已验证**：经 C 指针写 `0xAB`，JS 侧 `new Uint8Array(sab)[5]` 读到 `0xAB`。
+- 兜底（万一 SAB 仍被禁用，如宿主已先初始化 JSC）：用 `JSObjectMakeArrayBufferWithBytesNoCopy` 在自管理内存上建 ArrayBuffer（进程内零拷贝仍成立，但非跨 agent 共享），并以隐藏 Symbol 打标，使 `is_shared_arraybuffer` 仍报 true。**跨 agent/跨线程**的真正共享语义不由 JSC C API 暴露——属已知边界。
+
+**测试：** `test/jsc_v8compat.cc`（CTest `jsc_v8compat`）——SAB 零拷贝写读、真 SAB 构造器、`is`/`get_info` 一致性、plain object 非 SAB；inspector `start`/`stop` + 消息泵 no-op 契约。
+
 ---
 
 ## 8. 风险与对策

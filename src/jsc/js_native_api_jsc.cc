@@ -265,6 +265,14 @@ napi_env napi_jsc_env_new(JSGlobalContextRef ctx, void (*uncaught)(const char*))
     if (env->wrap_key != nullptr)
         JSValueProtect(ctx, env->wrap_key);
 
+    // SharedArrayBuffer constructor (present only if the engine enabled SAB; see
+    // the JSC_useSharedArrayBuffer constructor in napi_jsc_engine.cc) + the tag
+    // symbol for fallback ArrayBuffer-backed shared buffers.
+    env->shared_arraybuffer_ctor = cache_fn(global, "SharedArrayBuffer");
+    env->sab_tag = JSValueMakeSymbol(ctx, JSStr("napi.sab"));
+    if (env->sab_tag != nullptr)
+        JSValueProtect(ctx, env->sab_tag);
+
     return env;
 }
 
@@ -283,6 +291,8 @@ void napi_jsc_env_delete(napi_env env) {
     unprotect(env->obj_seal);
     unprotect(env->symbol_for);
     unprotect(env->wrap_key);
+    unprotect(env->shared_arraybuffer_ctor);
+    unprotect(env->sab_tag);
     unprotect(env->pending_exception);
 
     for (auto* scope : env->scopes) {

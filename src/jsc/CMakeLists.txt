@@ -47,4 +47,9 @@ if(NAPI_JSC_BUILD_TESTS)
   target_include_directories(jsc_weakref PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
   target_link_libraries(jsc_weakref PRIVATE napi_flags napi_jsc JSC::JSC)
   add_test(NAME jsc_weakref COMMAND jsc_weakref)
+
+  # V8-compat extensions: SharedArrayBuffer (real zero-copy) + Inspector.
+  add_executable(jsc_v8compat ${NAPI_IMPL_ROOT}/test/jsc_v8compat.cc)
+  target_link_libraries(jsc_v8compat PRIVATE napi_flags napi_jsc)
+  add_test(NAME jsc_v8compat COMMAND jsc_v8compat)
 endif()

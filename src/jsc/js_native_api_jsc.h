@@ -129,6 +129,20 @@ struct napi_env__ {
     // either teardown order (destroy_env then destroy_runtime, or vice versa)
     // is safe. Opaque to the napi surface.
     void* embed_owner = nullptr;
+
+    // SharedArrayBuffer extension (napi_v8/sab.h): the cached SAB constructor
+    // (null when the engine has SAB disabled) and a tag symbol marking the
+    // ArrayBuffer-backed fallback buffers as "shared".
+    JSObjectRef shared_arraybuffer_ctor = nullptr;  // protected
+    JSValueRef sab_tag = nullptr;                    // protected
+
+    // Inspector extension (napi_v8/inspector.h): handler slots, stored for
+    // round-trip fidelity. JSC's RemoteInspector transport is system-managed
+    // (attach via Safari's Develop menu), so these are not invoked by us.
+    void* insp_pause_handler = nullptr;
+    void* insp_pause_data = nullptr;
+    void* insp_wake_handler = nullptr;
+    void* insp_wake_data = nullptr;
 };
 
 // ---- shared helpers (defined in js_native_api_jsc.cc) ---------------------

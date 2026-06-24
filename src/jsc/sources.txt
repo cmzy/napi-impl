@@ -4,3 +4,4 @@
 napi_jsc_engine.cc
 js_native_api_jsc.cc
 jsc_object.cc
+jsc_v8compat.cc
