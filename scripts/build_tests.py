@@ -62,7 +62,7 @@ def gyp_targets(feature_dir: Path):
 
 
 def build_one(name: str, sources, feature_dir: Path, libdir: Path,
-              dry_run: bool, platform: str) -> bool:
+              dry_run: bool, platform: str, arch: str = "x86_64") -> bool:
     if not sources:
         return False
     # mac uses ./build/Release/ (Node convention so test.js can find it via
@@ -84,7 +84,7 @@ def build_one(name: str, sources, feature_dir: Path, libdir: Path,
             capture_output=True, text=True).stdout.strip()
         extra_flags = [
             "-isysroot", sdk,
-            "-target", "x86_64-apple-ios13.0-simulator",
+            "-target", f"{arch}-apple-ios13.0-simulator",
             "-mios-simulator-version-min=13.0",
         ]
     elif "ios" in str(libdir):
@@ -93,7 +93,7 @@ def build_one(name: str, sources, feature_dir: Path, libdir: Path,
             capture_output=True, text=True).stdout.strip()
         extra_flags = [
             "-isysroot", sdk,
-            "-target", "arm64-apple-ios13.0",
+            "-target", f"{arch}-apple-ios13.0",
             "-miphoneos-version-min=13.0",
         ]
     elif "android" in str(libdir):
@@ -212,7 +212,8 @@ def main():
                         sorted(p for p in d.iterdir()
                                if p.suffix in (".c", ".cc")))]
         for name, sources in targets:
-            if build_one(name, sources, d, libdir, args.dry_run, args.platform):
+            if build_one(name, sources, d, libdir, args.dry_run,
+                         args.platform, args.arch):
                 ok += 1
             else:
                 fail += 1

@@ -1,0 +1,105 @@
+name: JSC NAPI CI
+
+# Locks the JSC backend on Apple platforms. JSC ships no Node-API, so we
+# hand-write the napi_* surface on JavaScriptCore's system framework (src/jsc);
+# there is no engine to pre-build. Each job builds libnapi_jsc, checks
+# symbol-export discipline, and runs the upstream nodejs/node test/js-native-api
+# suite through our host runner, gating on a 50/50 baseline:
+#
+#   macOS arm64          -> CTest unit tests + js-native-api suite
+#   iOS simulator arm64  -> js-native-api suite via `simctl spawn`
+#
+# The simulator allows JIT (it runs on the host), so the iOS job validates
+# functional correctness on the iOS JSC/SDK, not the real-device jitless path
+# (JSC results are identical jitless — only slower). Both run on macos-15
+# (Apple Silicon / arm64). Linux/Android/Windows would need a built WebKit JSC
+# (J2) and are not covered here.
+
+on:
+  push:
+    branches: [main, 'worktree-jsc-napi']
+  pull_request:
+  workflow_dispatch:
+
+# Baseline: full pass on both platforms (see PLAN.md "M8 — JSC"). The suite is
+# fully green, so the gate is exact; lower it only with a documented regression.
+env:
+  JSC_MIN_PASS: '50'
+
+jobs:
+  macos:
+    name: macOS arm64 — unit tests + js-native-api suite
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12' }
+
+      - name: Install build deps
+        run: brew install ninja
+
+      - name: Build libnapi_jsc (mac arm64)
+        run: python3 scripts/build.py --engine=jsc --platform=mac --arch=arm64
+
+      - name: Unit tests (smoke / weakref / v8compat / buffers)
+        run: ctest --test-dir out/build/jsc-mac-arm64-release --output-on-failure
+
+      - name: Export discipline (only napi_*/node_api_*, no leaks)
+        run: |
+          DYLIB=out/build/jsc-mac-arm64-release/src/jsc/libnapi_jsc.dylib
+          TOTAL=$(nm -gU "$DYLIB" | wc -l | tr -d ' ')
+          NAPI=$(nm -gU "$DYLIB" | awk '{print $3}' | grep -cE '^_(napi|node_api)_')
+          echo "napi exports: $NAPI / total $TOTAL"
+          test "$NAPI" -eq "$TOTAL"   # zero non-napi exports leaked
+          test "$TOTAL" -ge 150       # full surface + V8-compat extensions
+
+      - name: Sync upstream js-native-api tests
+        run: python3 scripts/sync_napi_tests.py
+
+      - name: Build test bindings (mac arm64)
+        run: python3 scripts/build_tests.py --engine=jsc --platform=mac --arch=arm64
+
+      - name: Run js-native-api suite (baseline gate)
+        run: |
+          python3 scripts/run_tests.py --engine=jsc --platform=mac --arch=arm64 \
+            --keep-going --min-pass "${JSC_MIN_PASS}"
+
+  ios-sim:
+    name: iOS simulator arm64 — js-native-api suite
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12' }
+
+      - name: Install build deps
+        run: brew install ninja
+
+      - name: Build libnapi_jsc + runner (iOS simulator arm64)
+        run: python3 scripts/build.py --engine=jsc --platform=ios_sim --arch=arm64
+
+      - name: Boot an iOS simulator
+        run: |
+          UDID=$(xcrun simctl list devices available \
+                 | grep -i iPhone \
+                 | grep -oE '[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}' \
+                 | head -1)
+          test -n "$UDID"
+          echo "booting $UDID"
+          xcrun simctl boot "$UDID"
+          xcrun simctl bootstatus "$UDID"
+
+      - name: Sync upstream js-native-api tests
+        run: python3 scripts/sync_napi_tests.py
+
+      - name: Build test bindings (iOS simulator arm64)
+        run: python3 scripts/build_tests.py --engine=jsc --platform=ios_sim --arch=arm64
+
+      - name: Run js-native-api suite on simulator (baseline gate)
+        run: |
+          python3 scripts/run_tests.py --engine=jsc --platform=ios_sim --arch=arm64 \
+            --keep-going --min-pass "${JSC_MIN_PASS}"

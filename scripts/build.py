@@ -360,19 +360,26 @@ def build_hermes_path(platform: str, arch: str, config: str, package: bool):
 # JSC engine path (CMake track)
 # ---------------------------------------------------------------------------
 # JSC ships no Node-API, so we hand-write the napi_* surface on JavaScriptCore's
-# C API (src/jsc). J1 targets Apple's system JavaScriptCore.framework, so unlike
+# C API (src/jsc). It targets Apple's system JavaScriptCore.framework, so unlike
 # the Hermes path there is no engine to pre-build — just configure + build our
-# library and the smoke test. Linux/Android/Windows need a built WebKit JSC (J2).
+# library and tests. macOS uses the native compiler; iOS device / simulator use
+# cmake/toolchains/ios.cmake. Linux/Android/Windows need a built WebKit JSC (J2).
 
 def build_jsc_path(platform: str, arch: str, config: str, package: bool):
-    if platform != "mac":
-        raise SystemExit(
-            f"[todo] jsc only wired for macOS (J1); '{platform}' needs a built "
-            "WebKit JavaScriptCore (J2)")
     build_type = "Debug" if config == "debug" else "Release"
     lib_build = ROOT / "out" / "build" / f"jsc-{platform}-{arch}-{config}"
-    cfg = ["-DNAPI_ENGINE=jsc", f"-DCMAKE_BUILD_TYPE={build_type}",
-           f"-DCMAKE_OSX_ARCHITECTURES={arch}"]
+    cfg = ["-DNAPI_ENGINE=jsc", f"-DCMAKE_BUILD_TYPE={build_type}"]
+    if platform == "mac":
+        cfg += [f"-DCMAKE_OSX_ARCHITECTURES={arch}"]
+    elif platform in ("ios", "ios_sim"):
+        toolchain = ROOT / "cmake" / "toolchains" / "ios.cmake"
+        ios_platform = "SIMULATOR" if platform == "ios_sim" else "OS"
+        cfg += [f"-DCMAKE_TOOLCHAIN_FILE={toolchain}",
+                f"-DIOS_PLATFORM={ios_platform}", f"-DIOS_ARCH={arch}"]
+    else:
+        raise SystemExit(
+            f"[todo] jsc wired for mac/ios/ios_sim only; '{platform}' needs a "
+            "built WebKit JavaScriptCore (J2)")
     run(["cmake", "-S", str(ROOT), "-B", str(lib_build), "-G", "Ninja", *cfg])
     run(["cmake", "--build", str(lib_build)])
 
