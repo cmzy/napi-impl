@@ -121,12 +121,16 @@ def write_def(syms: list[str], path: Path):
 def main():
     import argparse
     ap = argparse.ArgumentParser()
-    ap.add_argument("--engine", default="v8", choices=["v8", "hermes"],
+    ap.add_argument("--engine", default="v8",
+                    choices=["v8", "hermes", "jsc", "quickjs"],
                     help="emit napi_<engine>.{lds,exp,def}")
     args = ap.parse_args()
 
+    # jsc implements the inspector + SharedArrayBuffer extensions (on JSC's own
+    # RemoteInspector / SAB), so it exports the same set as v8; hermes/quickjs
+    # do not.
     embedding = (EMBEDDING_COMMON + EMBEDDING_V8_ONLY
-                 if args.engine == "v8" else EMBEDDING_COMMON)
+                 if args.engine in ("v8", "jsc") else EMBEDDING_COMMON)
     prefix = f"napi_{args.engine}"
 
     EXPORTS.mkdir(parents=True, exist_ok=True)

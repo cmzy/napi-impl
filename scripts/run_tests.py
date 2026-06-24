@@ -22,6 +22,9 @@ def runner_bin(platform: str, arch: str, config: str, engine: str = "v8") -> Pat
     if engine == "hermes":
         return (ROOT / "out" / "build"
                 / f"hermes-{platform}-{arch}-{config}" / "src" / "hermes" / "runner")
+    if engine == "jsc":
+        return (ROOT / "out" / "build"
+                / f"jsc-{platform}-{arch}-{config}" / "src" / "jsc" / "runner")
     return (ROOT / "third_party" / "v8" / "out"
             / f"napi-{platform}-{arch}-{config}" / "runner")
 
@@ -52,7 +55,7 @@ def required_modules(testjs: Path):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--engine", default="v8", choices=["v8", "hermes"])
+    ap.add_argument("--engine", default="v8", choices=["v8", "hermes", "jsc"])
     ap.add_argument("--platform", default="mac")
     ap.add_argument("--arch", default="x86_64")
     ap.add_argument("--config", default="release")

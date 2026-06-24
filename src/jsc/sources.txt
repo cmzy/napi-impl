@@ -1,0 +1,8 @@
+# JSC NAPI backend sources (single source of truth, read by CMakeLists.txt).
+# Unlike Hermes (which links its own bundled Node-API), JSC ships no Node-API,
+# so we hand-write the napi_* surface on JavaScriptCore's C API.
+napi_jsc_engine.cc
+js_native_api_jsc.cc
+jsc_object.cc
+jsc_buffers.cc
+jsc_v8compat.cc

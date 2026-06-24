@@ -357,6 +357,39 @@ def build_hermes_path(platform: str, arch: str, config: str, package: bool):
 
 
 # ---------------------------------------------------------------------------
+# JSC engine path (CMake track)
+# ---------------------------------------------------------------------------
+# JSC ships no Node-API, so we hand-write the napi_* surface on JavaScriptCore's
+# C API (src/jsc). It targets Apple's system JavaScriptCore.framework, so unlike
+# the Hermes path there is no engine to pre-build — just configure + build our
+# library and tests. macOS uses the native compiler; iOS device / simulator use
+# cmake/toolchains/ios.cmake. Linux/Android/Windows need a built WebKit JSC (J2).
+
+def build_jsc_path(platform: str, arch: str, config: str, package: bool):
+    build_type = "Debug" if config == "debug" else "Release"
+    lib_build = ROOT / "out" / "build" / f"jsc-{platform}-{arch}-{config}"
+    cfg = ["-DNAPI_ENGINE=jsc", f"-DCMAKE_BUILD_TYPE={build_type}"]
+    if platform == "mac":
+        cfg += [f"-DCMAKE_OSX_ARCHITECTURES={arch}"]
+    elif platform in ("ios", "ios_sim"):
+        toolchain = ROOT / "cmake" / "toolchains" / "ios.cmake"
+        ios_platform = "SIMULATOR" if platform == "ios_sim" else "OS"
+        cfg += [f"-DCMAKE_TOOLCHAIN_FILE={toolchain}",
+                f"-DIOS_PLATFORM={ios_platform}", f"-DIOS_ARCH={arch}"]
+    else:
+        raise SystemExit(
+            f"[todo] jsc wired for mac/ios/ios_sim only; '{platform}' needs a "
+            "built WebKit JavaScriptCore (J2)")
+    run(["cmake", "-S", str(ROOT), "-B", str(lib_build), "-G", "Ninja", *cfg])
+    run(["cmake", "--build", str(lib_build)])
+
+    dylib = lib_build / "src" / "jsc" / "libnapi_jsc.dylib"
+    print(f"\n[done] artifacts -> {lib_build / 'src' / 'jsc'} ({dylib.name})")
+    if package:
+        raise SystemExit("[todo] jsc packaging (xcframework) is J2")
+
+
+# ---------------------------------------------------------------------------
 
 def main():
     ap = argparse.ArgumentParser()
@@ -380,8 +413,10 @@ def main():
                       args.gn_arg, args.package)
     elif args.engine == "hermes":
         build_hermes_path(args.platform, args.arch, args.config, args.package)
+    elif args.engine == "jsc":
+        build_jsc_path(args.platform, args.arch, args.config, args.package)
     else:
-        raise SystemExit(f"[todo] engine {args.engine} not yet supported (M7)")
+        raise SystemExit(f"[todo] engine {args.engine} not yet supported")
 
 
 if __name__ == "__main__":

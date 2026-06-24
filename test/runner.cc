@@ -47,21 +47,34 @@ extern "C" char** environ;
 #include <string>
 #include <vector>
 
+// Hermes and JSC share the "non-V8" runner behavior: no inspector internals,
+// drain finalizers via the public embedding tick, skip explicit teardown.
+#if defined(NAPI_RUNNER_HERMES) || defined(NAPI_RUNNER_JSC)
+#define NAPI_RUNNER_NON_V8
+#endif
+
 extern "C" {
 #include "napi/js_native_api.h"
 #include "napi/node_api.h"
 #include "napi_v8/embedding.h"
-#if !defined(NAPI_RUNNER_HERMES)
+#if !defined(NAPI_RUNNER_NON_V8)
 #include "napi_v8/inspector.h"
 #endif
 }
 
-#if !defined(NAPI_RUNNER_HERMES)
+#if !defined(NAPI_RUNNER_NON_V8)
 // V8 path: pull in our internal env layout so we can drain pending finalizers
 // after a manual gc() call (V8 weak callbacks enqueue them but our embedding
-// has no event loop to flush automatically). The Hermes path drains via the
+// has no event loop to flush automatically). The non-V8 paths drain via the
 // public embedding tick instead (napi_v8_run_event_loop_tasks).
 #include "../src/v8/js_native_api_v8.h"
+#endif
+
+#if defined(NAPI_RUNNER_JSC)
+// JSC has no V8-style --expose-gc; we provide gc() backed by JSGarbageCollect,
+// which needs the context held inside our env. Pull in the internal layout.
+#include <JavaScriptCore/JavaScript.h>
+#include "../src/jsc/js_native_api_jsc.h"
 #endif
 
 // ---- helpers --------------------------------------------------------------
@@ -113,9 +126,9 @@ static napi_value JsConsoleLog(napi_env env, napi_callback_info info) {
 // gc()). Called from JS as `__drainFinalizers()` after `gc()` so that mustCall
 // assertions tied to finalizers fire before the test asserts.
 static napi_value JsDrainFinalizers(napi_env env, napi_callback_info /*info*/) {
-#if defined(NAPI_RUNNER_HERMES)
-  // Hermes runs napi_wrap finalizers during GC; flush any deferred engine work
-  // (microtasks / second-pass finalizers) through the public embedding tick.
+#if defined(NAPI_RUNNER_NON_V8)
+  // Non-V8 engines run napi_wrap finalizers during GC; flush any deferred engine
+  // work (microtasks / second-pass finalizers) through the public embedding tick.
   napi_v8_run_event_loop_tasks(env);
 #else
   // Repeat: a finalizer can register more references; drain transitively but
@@ -131,6 +144,22 @@ static napi_value JsDrainFinalizers(napi_env env, napi_callback_info /*info*/) {
 #endif
   return nullptr;
 }
+
+#if defined(NAPI_RUNNER_JSC)
+// gc() for JSC: it has no --expose-gc, so back it with JSGarbageCollect. JSC's
+// collector is conservative over the C stack, so pump several passes (running
+// the public finalizer tick between each) to reclaim multi-level wrap/external
+// holders before the test asserts finalizer side effects.
+static napi_value JscGc(napi_env env, napi_callback_info /*info*/) {
+  for (int i = 0; i < 8; ++i) {
+    JSGarbageCollect(env->ctx);
+    napi_v8_run_event_loop_tasks(env);
+  }
+  napi_value undef;
+  napi_get_undefined(env, &undef);
+  return undef;
+}
+#endif
 
 // Runner state captured at startup so that __spawnSync can fork itself with
 // the same binding + module to handle the child branch of tests that use
@@ -625,7 +654,7 @@ int main(int argc, char** argv) {
 
   CHK(napi_create_env(runtime, &g_env));
 
-#if !defined(NAPI_RUNNER_HERMES)
+#if !defined(NAPI_RUNNER_NON_V8)
   // Optional: --inspect=<port>  among extra argv triggers the V8 inspector.
   for (int i = 4; i < argc; ++i) {
     const char* a = argv[i];
@@ -703,6 +732,13 @@ int main(int argc, char** argv) {
   CHK(napi_set_named_property(g_env, global, "__drainFinalizers", drain_fn));
   CHK(napi_set_named_property(g_env, global, "__spawnSync", spawn_fn));
 
+#if defined(NAPI_RUNNER_JSC)
+  // Provide globalThis.gc before the bootstrap captures it (__v8_gc).
+  napi_value gc_fn;
+  CHK(napi_create_function(g_env, "gc", NAPI_AUTO_LENGTH, JscGc, nullptr, &gc_fn));
+  CHK(napi_set_named_property(g_env, global, "gc", gc_fn));
+#endif
+
   // Expose process.argv extras (everything past test_path).
   napi_value argv_arr;
   napi_create_array(g_env, &argv_arr);
@@ -763,11 +799,11 @@ int main(int argc, char** argv) {
     return 1;
   }
 
-#if defined(NAPI_RUNNER_HERMES)
-  // Hermes fires napi finalizers during GC and defers their second pass to the
-  // task runner. Tests that assert finalizer side effects (mustCall counts) but
-  // don't themselves force a final GC would otherwise see the finalizer run
-  // only at teardown — after the check below. Pump gc()+drain a few rounds so
+#if defined(NAPI_RUNNER_NON_V8)
+  // Non-V8 engines fire napi finalizers during GC and defer their second pass.
+  // Tests that assert finalizer side effects (mustCall counts) but don't
+  // themselves force a final GC would otherwise see the finalizer run only at
+  // teardown — after the check below. Pump gc()+drain a few rounds so
   // collectable finalizers fire first.
   {
     napi_value gc_fn;
@@ -806,7 +842,7 @@ int main(int argc, char** argv) {
     }
   }
 
-#if !defined(NAPI_RUNNER_HERMES)
+#if !defined(NAPI_RUNNER_NON_V8)
   // If the inspector was started, keep pumping for a short tail window so
   // post-test CDP commands (Runtime.evaluate, breakpoint pause/resume) are
   // dispatched on this — the V8 — thread before we tear V8 down. This bare
@@ -828,7 +864,7 @@ int main(int argc, char** argv) {
   }
 #endif
   CHK(napi_close_handle_scope(g_env, scope));
-#if defined(NAPI_RUNNER_HERMES)
+#if defined(NAPI_RUNNER_NON_V8)
   // Skip explicit engine teardown by default. The adapter fixes the main
   // teardown use-after-free (deferred finalizer tasks outliving vm::Runtime),
   // which makes env-cleanup-hook teardown work — but a residual Hermes UAF

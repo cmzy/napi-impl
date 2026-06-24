@@ -25,6 +25,9 @@ def lib_dir(platform: str, arch: str, config: str, engine: str = "v8") -> Path:
     if engine == "hermes":
         return (ROOT / "out" / "build"
                 / f"hermes-{platform}-{arch}-{config}" / "src" / "hermes")
+    if engine == "jsc":
+        return (ROOT / "out" / "build"
+                / f"jsc-{platform}-{arch}-{config}" / "src" / "jsc")
     return ROOT / "third_party" / "v8" / "out" / f"napi-{platform}-{arch}-{config}"
 
 
@@ -59,7 +62,7 @@ def gyp_targets(feature_dir: Path):
 
 
 def build_one(name: str, sources, feature_dir: Path, libdir: Path,
-              dry_run: bool, platform: str) -> bool:
+              dry_run: bool, platform: str, arch: str = "x86_64") -> bool:
     if not sources:
         return False
     # mac uses ./build/Release/ (Node convention so test.js can find it via
@@ -81,7 +84,7 @@ def build_one(name: str, sources, feature_dir: Path, libdir: Path,
             capture_output=True, text=True).stdout.strip()
         extra_flags = [
             "-isysroot", sdk,
-            "-target", "x86_64-apple-ios13.0-simulator",
+            "-target", f"{arch}-apple-ios13.0-simulator",
             "-mios-simulator-version-min=13.0",
         ]
     elif "ios" in str(libdir):
@@ -90,7 +93,7 @@ def build_one(name: str, sources, feature_dir: Path, libdir: Path,
             capture_output=True, text=True).stdout.strip()
         extra_flags = [
             "-isysroot", sdk,
-            "-target", "arm64-apple-ios13.0",
+            "-target", f"{arch}-apple-ios13.0",
             "-miphoneos-version-min=13.0",
         ]
     elif "android" in str(libdir):
@@ -125,6 +128,8 @@ def build_one(name: str, sources, feature_dir: Path, libdir: Path,
 
     if (libdir / "libnapi_hermes.so").exists():
         lib_link_name = "napi_hermes"
+    elif (libdir / "libnapi_jsc.dylib").exists():
+        lib_link_name = "napi_jsc"
     elif (libdir / "libnapi_v8.so").exists():
         lib_link_name = "napi_v8"
     else:
@@ -172,7 +177,7 @@ def build_one(name: str, sources, feature_dir: Path, libdir: Path,
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--engine", default="v8", choices=["v8", "hermes"])
+    ap.add_argument("--engine", default="v8", choices=["v8", "hermes", "jsc"])
     ap.add_argument("--platform", default="mac")
     ap.add_argument("--arch", default="x86_64")
     ap.add_argument("--config", default="release")
@@ -182,7 +187,7 @@ def main():
 
     libdir = lib_dir(args.platform, args.arch, args.config, args.engine)
     lib_names = ("libNapiV8.dylib", "libnapi_v8.so", "napi_v8.dll",
-                 "libnapi_hermes.so")
+                 "libnapi_hermes.so", "libnapi_jsc.dylib")
     if not any((libdir / n).exists() for n in lib_names):
         sys.exit(f"napi library not found in {libdir} — run scripts/build.py first")
 
@@ -207,7 +212,8 @@ def main():
                         sorted(p for p in d.iterdir()
                                if p.suffix in (".c", ".cc")))]
         for name, sources in targets:
-            if build_one(name, sources, d, libdir, args.dry_run, args.platform):
+            if build_one(name, sources, d, libdir, args.dry_run,
+                         args.platform, args.arch):
                 ok += 1
             else:
                 fail += 1

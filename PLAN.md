@@ -642,6 +642,82 @@ else:                                    # hermes / jsc / quickjs
 
 ---
 
+## M8 — JSC 集成
+
+**目标：** 把 `napi_*` 后端接到 JavaScriptCore，产物 `libnapi_jsc` 与 `libnapi_v8` / `libnapi_hermes` 同 ABI 可互换。
+
+**实现策略（关键决策）：策略 B —— 在 JSC 的 C API 上自己手写 `js_native_api`。**
+
+- 与 Hermes 不同：**JSC 不自带 Node-API**（Hermes 的 `hermesNodeApi` 是策略 A 的前提，JSC 没有等价物）。因此 JSC 必须像 V8 那样把整套 `napi_*` 手写在引擎公开 API 上——只是底座从 `v8.h` 换成 JSC 的稳定 C API（`JSValueRef` / `JSObjectRef` / `JSStringRef`，头 `<JavaScriptCore/JavaScript.h>`）。
+- **J1 引擎来源：苹果系统 `JavaScriptCore.framework`**（macOS/iOS 自带，无需拉取/构建/vendoring）。因为 JSC 是**动态系统框架**（不像 V8 monolith / Hermes 静态归档被吞入），它始终是外部动态依赖——`otool -L` 可见，符号不会被吸收进我们的 dylib。Linux/Android/Windows 需要自构建 WebKit JSC，属 J2。
+- **唯一新写的 C++**：`src/jsc/`——`js_native_api_jsc.{h,cc}`（core）+ `jsc_object.cc`（对象/函数/类/wrap/引用/promise）+ `napi_jsc_engine.cc`（embedding 适配层，把 `JSContextGroupRef`→`napi_runtime`、`JSGlobalContextRef`→`napi_env` 映射到项目统一的 `napi_create_platform/runtime/env` + tick 钩子）。
+- 构建走 CMake 轨（与 Hermes 同），`cmake/modules/FindJSC.cmake` 定位系统框架并导出 `JSC::JSC`；`build.py --engine=jsc` 分流。
+
+**值模型与生命周期：**
+
+- `napi_value` **即** `JSValueRef`（reinterpret_cast）。每个交出的值都 `JSValueProtect` 并记入当前 handle scope，关 scope 时统一 `JSValueUnprotect`。env 创建时开一个 root scope，承载 host 在显式 scope 之外创建的值。
+- 异常：env 持有 `pending_exception`；JSC 各调用的 `JSValueRef* exception` out 参被收口为「pending」，`napi_get_and_clear_last_exception` 取走。
+- external / `napi_wrap`：用一个带 finalize 回调的自定义 `JSClass`（holder 对象，private 挂 native 指针 + finalizer）。wrap 把 holder 以一个隐藏 Symbol 键挂到目标对象上——目标被 GC 时 holder 随之被回收触发 finalize，finalizer **不在 GC 中重入 JS**，而是入队、由 tick（`napi_v8_run_event_loop_tasks`）与 env 销毁时 drain（镜像 Hermes 的 second-pass 思路）。
+- **弱引用（真实 GC 语义）**：JSC 公开 C API 无弱句柄原语，故用「holder + 共享 `RefControl`」实现：对象型 ref 在目标上挂一个 finalize holder，目标被回收时 holder 的 finalize 把 `control->alive` 置 false 并清空指针，`napi_get_reference_value` 此后返回空（napi_value NULL）。`refcount>0` 时额外 `JSValueProtect`（强保活），降到 0 解保护（转弱）。`napi_wrap` 返回的 ref 与 wrap holder 共用同一 `control`（对齐 Node 单 Reference 语义）。原始型（string/number/symbol）目标无法挂 holder 且无可观测回收，退化为全程强引用。
+- 函数 / `napi_define_class`：用带 `callAsFunction` / `callAsConstructor` 的自定义 `JSClass`（private 挂 `napi_callback` + data）。属性/访问器/特性统一经缓存的 `Object.defineProperty` 落地（C API 无直接定义访问器的入口）。
+
+**任务清单：**
+
+- [x] `cmake/modules/FindJSC.cmake`（Apple 系统框架，导出 `JSC::JSC`）
+- [x] 顶层 `src/CMakeLists.txt` 的 `jsc` 分流 + `src/jsc/CMakeLists.txt` + `sources.txt`
+- [x] `src/jsc/napi_jsc_engine.cc`（embedding 适配层）
+- [x] `src/jsc/js_native_api_jsc.{h,cc}` + `jsc_object.cc`（手写 napi 面）
+- [x] `scripts/build.py` 启用 `--engine=jsc`（macOS CMake 分流；无引擎预构建）
+- [x] `scripts/gen_export_list.py` 支持 `--engine=jsc`；`gn/exports/napi_jsc.{lds,exp,def}`（139 符号，与 Hermes 表一致：同样略去 V8-only inspector+SAB）
+- [x] **弱引用 / finalizer 真实 GC 语义**（RefControl + holder；强引用保活、弱引用回收后置空）
+- [x] **J1 烟囱测试**：`test/jsc_smoke.cc`——`napi_run_script("1+2")==3`，外加字符串往返 / 对象属性 / JS 调原生函数；CTest `jsc_smoke` 通过（macOS x86_64）
+- [x] **弱引用测试**：`test/jsc_weakref.cc`（white-box，经内部头取 `env->ctx` 调 `JSGarbageCollect` 强制回收）——验证 wrap finalizer 回收后触发、弱 ref 置空、强 ref(refcount 1) 跨 GC 存活、unref 后转弱可回收；CTest `jsc_weakref` 通过（确定性，需对保守式栈扫描做栈卫生：目标只活在已弹出的 noinline 帧里、回收前不把值取到栈上）
+- [x] **公共 API 完整性核对**：`js_native_api.h` 全部 123 个函数均导出（0 遗漏）；`node_api.h` 的 32 个 Node 运行时扩展按 §2 范围不导出（与 V8/Hermes 后端一致）
+- [x] **符号纪律**：`nm -gU` 断言仅 139 个 `napi_*`/`node_api_*` 导出，零泄漏；`otool -L` 确认 JSC 为外部动态依赖
+
+**J1 覆盖范围：** 值（undefined/null/boolean/number/string utf8+utf16+latin1/symbol）、typeof/coerce/strict_equals、`run_script`、错误与异常（throw/create/syntax/pending/clear/last_error）、handle/escapable scope、对象与属性（named/keyed/element/property_names/prototype/freeze/seal/has_own）、数组、函数（create/call/new_instance/cb_info/new_target/instanceof/define_class/define_properties）、external/wrap/unwrap/remove_wrap/add_finalizer、引用、promise（deferred）、date、property key、instance_data。全套 ABI 符号均**有定义**（drop-in 互换），故导出列表干净链接。
+
+**缓冲/BigInt/类型标签等已补完（原 J2，现已实现，见 `src/jsc/jsc_buffers.cc`）：**
+- **ArrayBuffer**：`create`（`JSObjectMakeArrayBufferWithBytesNoCopy` 包我们自管理的内存，deallocator 释放）、`create_external`（deallocator 入队用户 finalizer）、`get_info`、`is_detached`（读 `.detached`）。**detach**：JSC C API 无 detach 入口，用 `ArrayBuffer.prototype.transfer()` 退化实现——**关键边界**：一旦 native 取过该 buffer 的字节指针（`JSObjectGetArrayBufferBytesPtr`，即 `napi_get_arraybuffer_info` 会触发），JSC 永久 pin 其后备存储，`transfer()` 不再能 detach（会返回副本、源仍 attached——detach 会让 native 指针悬空）。故 `napi_detach_arraybuffer` 会校验是否真的 detach，未成则返回 `napi_detachable_arraybuffer_expected`。
+- **TypedArray**：`create`（`JSObjectMakeTypedArrayWithArrayBufferAndOffset`）、`get_info`（`JSObjectGetTypedArray*` + `JSValueGetTypedArrayType` 双向映射）。零拷贝已验证。`napi_float16_array` 无 JSC C-API 类型，`create` 返回 `napi_invalid_arg`。
+- **DataView**：C API 无构造器，用全局 `DataView` 构造；`get_info` 经 `.buffer`/`.byteOffset`/`.byteLength` + buffer 字节指针计算 `data`。
+- **BigInt**：JSC C API 无 BigInt 面（`kJSTypeBigInt` 仅 macOS 15+/iOS 18+，用于类型判定）。`create_int64`/`uint64`/`words` 经 BigInt **字面量**求值（`-0x..n`/`..n`）；`get_value_*` 经 `BigInt.asIntN/asUintN(64,·)` + `toString` 解析；`get_value_bigint_words` 经 `toString(16)` 解析为 64 位小端字（遵循 `*word_count` 入参为容量、出参为实际数的 in/out 语义）。
+- **类型标签**：以隐藏 per-env Symbol（`type_tag_key`）键挂一个 32 位十六进制字符串编码的 128 位 tag；重复打标返回 `napi_invalid_arg`。
+- **`get_all_property_names`**：经 JS 辅助函数（`Reflect.ownKeys` + `getOwnPropertyDescriptor` + 原型链遍历）落实 mode/filter/conversion 全部语义（own/含原型、writable/enumerable/configurable、skip strings/symbols、numbers→strings）。
+
+**测试：** `test/jsc_buffers.cc`（CTest `jsc_buffers`）——AB/TA/DV 创建+info+零拷贝+detach（含 pin 边界用例）、BigInt int64/uint64/words 正负往返+计数查询、类型标签匹配/不匹配/重复打标、`get_all_property_names` 过滤计数。
+
+**真正剩余的 J2：** `napi_adjust_external_memory`（JSC C API 无外部内存记账钩子，当前接受并回报增量；no-op 不崩溃）、跨平台（iOS 真机 / 非 Apple 的 WebKit JSC 构建）与打包（xcframework）。**弱引用已在 J1 实现**（见上）。
+
+**V8 专属扩展的适配（待定，需拍板）：** `napi_v8/inspector.h`（8 函数，CDP 调试）与 `napi_v8/sab.h`（3 函数，SharedArrayBuffer 零拷贝）是 V8 后端独有，JSC 导出列表当前不含它们。适配方案见下节《V8 专属 API 适配》。
+
+**已验收（J1）：** `python3 scripts/build.py --engine=jsc --platform=mac --arch=x86_64` 产出 `out/build/jsc-mac-x86_64-release/src/jsc/libnapi_jsc.dylib`，仅导出 `napi_*`/`node_api_*`，`jsc_smoke` 端到端跑通。
+
+### V8 专属 API 适配（已实现）
+
+V8 后端独有的两个项目扩展（`napi_v8/inspector.h` + `napi_v8/sab.h`，共 11 个 `napi_v8_*` 符号）已在 JSC 上做**真实适配**（非 stub）。导出列表因此从 139 → **150**；`gen_export_list.py` 对 `jsc` 与 `v8` 一样附带 `EMBEDDING_V8_ONLY` 集（hermes/quickjs 不带）。符号沿用 `napi_v8_` 前缀（与跨引擎的 `napi_v8_run_event_loop_tasks` 同理），令针对扩展头编写的消费者可链接任一 `libnapi_<engine>`。实现于 `src/jsc/jsc_v8compat.cc`。
+
+**Inspector（8 函数）—— 真实但走 JSC 自己的协议：**
+- `start` = `JSGlobalContextSetName`(置 `context_name`) + `JSGlobalContextSetInspectable(ctx,true)`（macOS 13.3+/iOS 16.4+，公开 API）。`stop` = `SetInspectable(false)`。这让 context **真的可调试**——经**系统 RemoteInspector** 传输，从 **Safari → 开发** 菜单接入（**WebKit Inspector 协议**，非 Chrome CDP / 非 `chrome://inspect`）。
+- 与 V8 路径的本质差异：JSC 无 TCP 端口、无主机驱动的消息泵。故 `port` 参数不适用（忽略）；`pump_messages`/`is_paused`/`wait`/`set_pause_handler`/`set_wake_handler` 是**诚实的 no-op**（JSC 用自管理的传输线程，主机无队列可抽，无公开暂停态查询）。handler 仅存档不回调。低版本 OS（无 `SetInspectable`）下 `start` 返回 `napi_generic_failure`。
+
+**SharedArrayBuffer（3 函数）—— 真实零拷贝：**
+- JSC 默认关闭 SAB（Spectre 缓解）。在 `napi_jsc_engine.cc` 的库 `__attribute__((constructor))` 里 `setenv("JSC_useSharedArrayBuffer","1",0)`（dlopen 即跑，早于宿主首个 VM 创建；overwrite=0 尊重宿主已设值），从而 `globalThis.SharedArrayBuffer` 可用。
+- `create` 经全局 `SharedArrayBuffer` 构造器产**真 SAB**（已验证 `__s.constructor.name === "SharedArrayBuffer"`），用 `JSObjectGetArrayBufferBytesPtr` 取后备指针返回；`is`=`instanceof SharedArrayBuffer`；`get_info`=`bytesPtr`+`byteLength`。**零拷贝已验证**：经 C 指针写 `0xAB`，JS 侧 `new Uint8Array(sab)[5]` 读到 `0xAB`。
+- 兜底（万一 SAB 仍被禁用，如宿主已先初始化 JSC）：用 `JSObjectMakeArrayBufferWithBytesNoCopy` 在自管理内存上建 ArrayBuffer（进程内零拷贝仍成立，但非跨 agent 共享），并以隐藏 Symbol 打标，使 `is_shared_arraybuffer` 仍报 true。**跨 agent/跨线程**的真正共享语义不由 JSC C API 暴露——属已知边界。
+
+**测试：** `test/jsc_v8compat.cc`（CTest `jsc_v8compat`）——SAB 零拷贝写读、真 SAB 构造器、`is`/`get_info` 一致性、plain object 非 SAB；inspector `start`/`stop` + 消息泵 no-op 契约。
+
+### 上游 nodejs/node `test/js-native-api` 套件 —— macOS & iOS 模拟器各 **50/50 全过**
+
+复用 V8/Hermes 的 host runner（`test/runner.cc`），新增 `NAPI_RUNNER_JSC` 路径——与 Hermes 同属"非 V8"分支（无 inspector 内部、经 `napi_v8_run_event_loop_tasks` 抽 finalizer、默认跳显式 teardown），并补一个 **`JSGarbageCollect` 支撑的 `gc()`**（JSC 无 V8 的 `--expose-gc`；保守式 GC 故每次 pump 多趟 + 中间跑 finalizer tick）。`build_tests.py` / `run_tests.py` 加 `--engine=jsc`（iOS 经 `simctl spawn` 跑）。`src/jsc/CMakeLists.txt` 加 `runner` target（链 `JSC::JSC` 取 `JSGarbageCollect`，iOS 上 `MACOSX_BUNDLE OFF` 保持裸可执行）。
+
+- **macOS x86_64：50/50**，**iOS 26.3 模拟器：50/50**，零失败零跳过。
+- **优于 Hermes（43/50）**：JSC 后端把 Hermes 当年发散的全部硬用例都跑过了——`6_object_wrap/test-object-wrap-ref`、`test_finalizer/test_fatal_finalize`、`test_general/testEnvCleanup`（env 清理钩子）、`test_reference/test_finalizer`、`test_reference_double_free/test_wrap`、`testFinalizerException` 等。关键在于 J1 的弱引用 + finalizer 真实 GC 语义扎实，且**完整 teardown 不崩**（Hermes 因残留 UAF 被迫跳 teardown，JSC 无此问题）。
+- 命令：`build.py --engine=jsc --platform={mac,ios_sim} && build_tests.py --engine=jsc ... && run_tests.py --engine=jsc ... --keep-going`。
+
+---
+
 ## 8. 风险与对策
 
 | 风险 | 影响 | 对策 |
