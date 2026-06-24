@@ -5,3 +5,4 @@
 0003-node-api-adjust-external-memory.patch
 0004-node-api-remove-wrap-resets-finalizer.patch
 0005-node-api-finalizer-holder-erase-before-invoke.patch
+0006-node-api-create-array-with-length-no-eager-alloc.patch

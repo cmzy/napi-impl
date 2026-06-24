@@ -1,0 +1,37 @@
+Fix napi_create_array_with_length() eagerly allocating storage for the length.
+
+It called JSArray::create(runtime, capacity=length, length=length), which
+allocates an ArrayStorage of `length` elements and throws
+"Requested an array size that fails to allocate" (RangeError) for large/sparse
+lengths -- e.g. napi_create_array_with_length(2**32 - 1)
+(js-native-api test_array NewWithLength). Hermes itself fully supports sparse
+arrays of that length: `new Array(2**32 - 1)` succeeds, because the Array
+constructor (lib/VM/JSLib/Array.cpp) creates an empty array and then calls
+JSArray::setLengthProperty() rather than pre-allocating. Mirror that here:
+create capacity 0 and set the length property separately.
+diff --git a/API/hermes_node_api/hermes_node_api.cpp b/API/hermes_node_api/hermes_node_api.cpp
+--- a/API/hermes_node_api/hermes_node_api.cpp
++++ b/API/hermes_node_api/hermes_node_api.cpp
+@@ -5162,10 +5162,19 @@
+   CHECK_ARG(result);
+ 
+   vm::GCScope gcScope{env->runtime_};
+-  vm::CallResult<vm::PseudoHandle<vm::JSArray>> res = vm::JSArray::create(
+-      env->runtime_, /*capacity:*/ length, /*length:*/ length);
++  // Create an empty array and set its length separately, mirroring the JS
++  // `new Array(n)` constructor (lib/VM/JSLib/Array.cpp). Passing capacity ==
++  // length to JSArray::create eagerly allocates ArrayStorage for `length`
++  // elements and throws RangeError for large/sparse lengths (e.g. 2^32-1), even
++  // though Hermes fully supports sparse arrays of that length.
++  vm::CallResult<vm::PseudoHandle<vm::JSArray>> res =
++      vm::JSArray::create(env->runtime_, /*capacity:*/ 0, /*length:*/ 0);
+   CHECK_STATUS(env->checkExecutionStatus(res.getStatus()));
+-  return env->makeResultValue(res->getHermesValue(), result);
++  vm::Handle<vm::JSArray> arr = env->runtime_.makeHandle(std::move(*res));
++  vm::CallResult<bool> lengthRes = vm::JSArray::setLengthProperty(
++      arr, env->runtime_, static_cast<uint32_t>(length));
++  CHECK_STATUS(env->checkExecutionStatus(lengthRes.getStatus()));
++  return env->makeResultValue(arr.getHermesValue(), result);
+ }
+ 
+ napi_status NAPI_CDECL napi_create_string_latin1(
