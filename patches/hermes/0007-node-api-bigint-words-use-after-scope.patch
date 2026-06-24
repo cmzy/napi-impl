@@ -1,0 +1,32 @@
+Fix stack/heap-use-after-scope in napi_create_bigint_words() for negatives.
+
+For a negative bigint (signBit set) it built the 2's-complement words into a
+SmallVector declared inside the `if` block, set `words = negativeValue.data()`,
+then read `words` via BigIntPrimitive::fromBytes() AFTER the block closed and the
+SmallVector was destroyed. initWithBytes() memcpy's from that freed storage
+(SmallVector's inline buffer is on the stack -> stack-use-after-scope; spilled to
+heap for wordCount > 16 -> heap-use-after-free). It happened to work in
+non-ASan builds because the stack window was not yet clobbered, but it is UB and
+AddressSanitizer flags it (BigIntSupport.cpp:138, via js-native-api test_bigint
+TestWords). Hoist negativeValue to function scope so it outlives fromBytes().
+diff --git a/API/hermes_node_api/hermes_node_api.cpp b/API/hermes_node_api/hermes_node_api.cpp
+--- a/API/hermes_node_api/hermes_node_api.cpp
++++ b/API/hermes_node_api/hermes_node_api.cpp
+@@ -5518,9 +5518,16 @@
+ 
+   vm::GCScope gcScope{env->runtime_};
+ 
++  // Holds the 2's-complement words for a negative bigint. It must outlive the
++  // fromBytes() call below (which reads `words`), so it lives at function scope.
++  // Previously it was declared inside the `if`, leaving `words` dangling into
++  // freed storage after the block — a stack/heap-use-after-scope read in
++  // initWithBytes() (caught by ASan; worked by luck without it).
++  llvh::SmallVector<uint64_t, 16> negativeValue;
++
+   if (signBit) {
+     // Use 2's complement algorithm to represent negative numbers.
+-    llvh::SmallVector<uint64_t, 16> negativeValue{words, words + wordCount};
++    negativeValue.assign(words, words + wordCount);
+ 
+     // a. flip all bits
+     for (uint64_t &entry : negativeValue) {
