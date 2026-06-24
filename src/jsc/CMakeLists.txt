@@ -10,6 +10,8 @@
 list(APPEND CMAKE_MODULE_PATH ${NAPI_IMPL_ROOT}/cmake/modules)
 find_package(JSC REQUIRED)
 
+# Re-run CMake when the source list changes (file(STRINGS) is configure-time).
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS sources.txt)
 file(STRINGS sources.txt JSC_SOURCES_RAW)
 list(FILTER JSC_SOURCES_RAW EXCLUDE REGEX "^#|^$")
 
@@ -52,4 +54,9 @@ if(NAPI_JSC_BUILD_TESTS)
   add_executable(jsc_v8compat ${NAPI_IMPL_ROOT}/test/jsc_v8compat.cc)
   target_link_libraries(jsc_v8compat PRIVATE napi_flags napi_jsc)
   add_test(NAME jsc_v8compat COMMAND jsc_v8compat)
+
+  # ArrayBuffer / TypedArray / DataView, BigInt, type tags, all_property_names.
+  add_executable(jsc_buffers_test ${NAPI_IMPL_ROOT}/test/jsc_buffers.cc)
+  target_link_libraries(jsc_buffers_test PRIVATE napi_flags napi_jsc)
+  add_test(NAME jsc_buffers COMMAND jsc_buffers_test)
 endif()

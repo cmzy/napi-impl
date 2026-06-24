@@ -677,7 +677,17 @@ else:                                    # hermes / jsc / quickjs
 
 **J1 覆盖范围：** 值（undefined/null/boolean/number/string utf8+utf16+latin1/symbol）、typeof/coerce/strict_equals、`run_script`、错误与异常（throw/create/syntax/pending/clear/last_error）、handle/escapable scope、对象与属性（named/keyed/element/property_names/prototype/freeze/seal/has_own）、数组、函数（create/call/new_instance/cb_info/new_target/instanceof/define_class/define_properties）、external/wrap/unwrap/remove_wrap/add_finalizer、引用、promise（deferred）、date、property key、instance_data。全套 ABI 符号均**有定义**（drop-in 互换），故导出列表干净链接。
 
-**J2（已 defined 为占位，返回明确状态而非崩溃，待补全）：** BigInt（JSC C API 无构造入口）、TypedArray / ArrayBuffer / DataView 的 create+info+detach、`type_tag` 系列、`get_all_property_names` 的 filter/mode/symbol 键。跨平台（iOS/非 Apple 的 WebKit JSC 构建）与打包（xcframework）亦属 J2。**弱引用已在 J1 实现**（见上）。
+**缓冲/BigInt/类型标签等已补完（原 J2，现已实现，见 `src/jsc/jsc_buffers.cc`）：**
+- **ArrayBuffer**：`create`（`JSObjectMakeArrayBufferWithBytesNoCopy` 包我们自管理的内存，deallocator 释放）、`create_external`（deallocator 入队用户 finalizer）、`get_info`、`is_detached`（读 `.detached`）。**detach**：JSC C API 无 detach 入口，用 `ArrayBuffer.prototype.transfer()` 退化实现——**关键边界**：一旦 native 取过该 buffer 的字节指针（`JSObjectGetArrayBufferBytesPtr`，即 `napi_get_arraybuffer_info` 会触发），JSC 永久 pin 其后备存储，`transfer()` 不再能 detach（会返回副本、源仍 attached——detach 会让 native 指针悬空）。故 `napi_detach_arraybuffer` 会校验是否真的 detach，未成则返回 `napi_detachable_arraybuffer_expected`。
+- **TypedArray**：`create`（`JSObjectMakeTypedArrayWithArrayBufferAndOffset`）、`get_info`（`JSObjectGetTypedArray*` + `JSValueGetTypedArrayType` 双向映射）。零拷贝已验证。`napi_float16_array` 无 JSC C-API 类型，`create` 返回 `napi_invalid_arg`。
+- **DataView**：C API 无构造器，用全局 `DataView` 构造；`get_info` 经 `.buffer`/`.byteOffset`/`.byteLength` + buffer 字节指针计算 `data`。
+- **BigInt**：JSC C API 无 BigInt 面（`kJSTypeBigInt` 仅 macOS 15+/iOS 18+，用于类型判定）。`create_int64`/`uint64`/`words` 经 BigInt **字面量**求值（`-0x..n`/`..n`）；`get_value_*` 经 `BigInt.asIntN/asUintN(64,·)` + `toString` 解析；`get_value_bigint_words` 经 `toString(16)` 解析为 64 位小端字（遵循 `*word_count` 入参为容量、出参为实际数的 in/out 语义）。
+- **类型标签**：以隐藏 per-env Symbol（`type_tag_key`）键挂一个 32 位十六进制字符串编码的 128 位 tag；重复打标返回 `napi_invalid_arg`。
+- **`get_all_property_names`**：经 JS 辅助函数（`Reflect.ownKeys` + `getOwnPropertyDescriptor` + 原型链遍历）落实 mode/filter/conversion 全部语义（own/含原型、writable/enumerable/configurable、skip strings/symbols、numbers→strings）。
+
+**测试：** `test/jsc_buffers.cc`（CTest `jsc_buffers`）——AB/TA/DV 创建+info+零拷贝+detach（含 pin 边界用例）、BigInt int64/uint64/words 正负往返+计数查询、类型标签匹配/不匹配/重复打标、`get_all_property_names` 过滤计数。
+
+**真正剩余的 J2：** `napi_adjust_external_memory`（JSC C API 无外部内存记账钩子，当前接受并回报增量；no-op 不崩溃）、跨平台（iOS 真机 / 非 Apple 的 WebKit JSC 构建）与打包（xcframework）。**弱引用已在 J1 实现**（见上）。
 
 **V8 专属扩展的适配（待定，需拍板）：** `napi_v8/inspector.h`（8 函数，CDP 调试）与 `napi_v8/sab.h`（3 函数，SharedArrayBuffer 零拷贝）是 V8 后端独有，JSC 导出列表当前不含它们。适配方案见下节《V8 专属 API 适配》。
 

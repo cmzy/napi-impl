@@ -327,11 +327,53 @@ napi_status NAPI_CDECL napi_get_property_names(napi_env env, napi_value object, 
     return napi_jsc_clear_error(env);
 }
 
-napi_status NAPI_CDECL napi_get_all_property_names(napi_env env, napi_value object, napi_key_collection_mode,
-                                                   napi_key_filter, napi_key_conversion, napi_value* result) {
-    // J1: filters/symbol keys/prototype walking not modeled; return own
-    // enumerable string keys (the common case). (J2: honor filter+mode.)
-    return napi_get_property_names(env, object, result);
+napi_status NAPI_CDECL napi_get_all_property_names(napi_env env, napi_value object, napi_key_collection_mode mode,
+                                                   napi_key_filter filter, napi_key_conversion conversion,
+                                                   napi_value* result) {
+    NAPI_PREAMBLE(env);
+    CHECK_ARG(env, object);
+    CHECK_ARG(env, result);
+    JSObjectRef obj = AsObject(env, object);
+    RETURN_STATUS_IF_FALSE(env, obj != nullptr, napi_object_expected);
+    // The C API has no descriptor-aware key enumeration, so honor mode/filter/
+    // conversion through a JS helper using Reflect.ownKeys + descriptors.
+    static const char* kHelper =
+        "(function(o,own,wr,en,cf,ss,sy,n2s){"
+        "var out=[],seen=new Set(),c=o;"
+        "do{var ks=Reflect.ownKeys(c);"
+        "for(var i=0;i<ks.length;i++){var k=ks[i];var sym=(typeof k==='symbol');"
+        "if(sym){if(sy)continue;}else{if(ss)continue;}"
+        "var d=Object.getOwnPropertyDescriptor(c,k);if(!d)continue;"
+        "if(wr&&!('writable' in d?d.writable:true))continue;"
+        "if(en&&!d.enumerable)continue;"
+        "if(cf&&!d.configurable)continue;"
+        "var id=sym?k:String(k);if(seen.has(id))continue;seen.add(id);"
+        "out.push((n2s&&!sym)?String(k):k);}"
+        "if(own)break;c=Object.getPrototypeOf(c);}while(c);"
+        "return out;})";
+    JSValueRef exc = nullptr;
+    JSStringRef src = JSStringCreateWithUTF8CString(kHelper);
+    JSValueRef fnv = JSEvaluateScript(env->ctx, src, nullptr, nullptr, 0, &exc);
+    JSStringRelease(src);
+    if (exc != nullptr)
+        return napi_jsc_record_exception(env, exc);
+    JSObjectRef fn = JSValueToObject(env->ctx, fnv, nullptr);
+    auto b = [&](bool v) { return JSValueMakeBoolean(env->ctx, v); };
+    JSValueRef args[8] = {
+        ToJS(object),
+        b(mode == napi_key_own_only),
+        b((filter & napi_key_writable) != 0),
+        b((filter & napi_key_enumerable) != 0),
+        b((filter & napi_key_configurable) != 0),
+        b((filter & napi_key_skip_strings) != 0),
+        b((filter & napi_key_skip_symbols) != 0),
+        b(conversion == napi_key_numbers_to_strings),
+    };
+    JSValueRef arr = JSObjectCallAsFunction(env->ctx, fn, nullptr, 8, args, &exc);
+    if (exc != nullptr)
+        return napi_jsc_record_exception(env, exc);
+    *result = napi_jsc_add_handle(env, arr);
+    return napi_jsc_clear_error(env);
 }
 
 napi_status NAPI_CDECL napi_get_prototype(napi_env env, napi_value object, napi_value* result) {
@@ -954,49 +996,8 @@ napi_status NAPI_CDECL napi_is_dataview(napi_env env, napi_value value, bool* re
     return napi_jsc_clear_error(env);
 }
 
-napi_status NAPI_CDECL napi_is_detached_arraybuffer(napi_env env, napi_value value, bool* result) {
-    CHECK_ENV(env);
-    CHECK_ARG(env, result);
-    // J2: JSC's C API has no detach-state query; report non-detached.
-    *result = false;
-    return napi_jsc_clear_error(env);
-}
-
-// ---- not-yet-implemented (defined so the full ABI links) ------------------
-//
-// These need JSC features without a direct C-API mapping (BigInt has no C
-// constructor; typed-array/dataview/arraybuffer info getters and type tags are
-// J2). Each returns a clear status instead of crashing.
-
-namespace {
-napi_status NotImpl(napi_env env) {
-    return napi_jsc_set_error(env, napi_generic_failure);
-}
-}  // namespace
-
-napi_status NAPI_CDECL napi_create_bigint_int64(napi_env env, int64_t, napi_value*) { CHECK_ENV(env); return NotImpl(env); }
-napi_status NAPI_CDECL napi_create_bigint_uint64(napi_env env, uint64_t, napi_value*) { CHECK_ENV(env); return NotImpl(env); }
-napi_status NAPI_CDECL napi_create_bigint_words(napi_env env, int, size_t, const uint64_t*, napi_value*) { CHECK_ENV(env); return NotImpl(env); }
-napi_status NAPI_CDECL napi_get_value_bigint_int64(napi_env env, napi_value, int64_t*, bool*) { CHECK_ENV(env); return NotImpl(env); }
-napi_status NAPI_CDECL napi_get_value_bigint_uint64(napi_env env, napi_value, uint64_t*, bool*) { CHECK_ENV(env); return NotImpl(env); }
-napi_status NAPI_CDECL napi_get_value_bigint_words(napi_env env, napi_value, int*, size_t*, uint64_t*) { CHECK_ENV(env); return NotImpl(env); }
-
-napi_status NAPI_CDECL napi_create_arraybuffer(napi_env env, size_t, void**, napi_value*) { CHECK_ENV(env); return NotImpl(env); }
-napi_status NAPI_CDECL napi_create_external_arraybuffer(napi_env env, void*, size_t, napi_finalize, void*, napi_value*) { CHECK_ENV(env); return NotImpl(env); }
-napi_status NAPI_CDECL napi_get_arraybuffer_info(napi_env env, napi_value, void**, size_t*) { CHECK_ENV(env); return NotImpl(env); }
-napi_status NAPI_CDECL napi_detach_arraybuffer(napi_env env, napi_value) { CHECK_ENV(env); return NotImpl(env); }
-napi_status NAPI_CDECL napi_create_typedarray(napi_env env, napi_typedarray_type, size_t, napi_value, size_t, napi_value*) { CHECK_ENV(env); return NotImpl(env); }
-napi_status NAPI_CDECL napi_get_typedarray_info(napi_env env, napi_value, napi_typedarray_type*, size_t*, void**, napi_value*, size_t*) { CHECK_ENV(env); return NotImpl(env); }
-napi_status NAPI_CDECL napi_create_dataview(napi_env env, size_t, napi_value, size_t, napi_value*) { CHECK_ENV(env); return NotImpl(env); }
-napi_status NAPI_CDECL napi_get_dataview_info(napi_env env, napi_value, size_t*, void**, napi_value*, size_t*) { CHECK_ENV(env); return NotImpl(env); }
-
-napi_status NAPI_CDECL napi_type_tag_object(napi_env env, napi_value, const napi_type_tag*) { CHECK_ENV(env); return NotImpl(env); }
-napi_status NAPI_CDECL napi_check_object_type_tag(napi_env env, napi_value, const napi_type_tag*, bool* result) {
-    CHECK_ENV(env);
-    if (result != nullptr)
-        *result = false;
-    return NotImpl(env);
-}
+// napi_is_detached_arraybuffer, the ArrayBuffer/TypedArray/DataView family,
+// BigInt, and type tags are implemented in jsc_buffers.cc.
 
 // Not declared in the vendored node-api-headers (upstream Hermes provides it),
 // so declare it here to inherit NAPI_EXTERN's default visibility + C linkage.

@@ -264,6 +264,9 @@ napi_env napi_jsc_env_new(JSGlobalContextRef ctx, void (*uncaught)(const char*))
     env->wrap_key = JSValueMakeSymbol(ctx, JSStr("napi.wrap"));
     if (env->wrap_key != nullptr)
         JSValueProtect(ctx, env->wrap_key);
+    env->type_tag_key = JSValueMakeSymbol(ctx, JSStr("napi.typeTag"));
+    if (env->type_tag_key != nullptr)
+        JSValueProtect(ctx, env->type_tag_key);
 
     // SharedArrayBuffer constructor (present only if the engine enabled SAB; see
     // the JSC_useSharedArrayBuffer constructor in napi_jsc_engine.cc) + the tag
@@ -291,6 +294,7 @@ void napi_jsc_env_delete(napi_env env) {
     unprotect(env->obj_seal);
     unprotect(env->symbol_for);
     unprotect(env->wrap_key);
+    unprotect(env->type_tag_key);
     unprotect(env->shared_arraybuffer_ctor);
     unprotect(env->sab_tag);
     unprotect(env->pending_exception);

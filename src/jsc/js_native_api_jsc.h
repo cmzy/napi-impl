@@ -116,6 +116,7 @@ struct napi_env__ {
     JSObjectRef obj_seal = nullptr;              // Object.seal
     JSObjectRef symbol_for = nullptr;            // Symbol.for
     JSValueRef wrap_key = nullptr;               // hidden Symbol keying napi_wrap holders
+    JSValueRef type_tag_key = nullptr;           // hidden Symbol keying napi_type_tag_object tags
 
     std::mutex finalizer_mu;
     std::deque<PendingFinalizer> pending_finalizers;
