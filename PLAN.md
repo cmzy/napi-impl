@@ -658,6 +658,7 @@ else:                                    # hermes / jsc / quickjs
 - `napi_value` **即** `JSValueRef`（reinterpret_cast）。每个交出的值都 `JSValueProtect` 并记入当前 handle scope，关 scope 时统一 `JSValueUnprotect`。env 创建时开一个 root scope，承载 host 在显式 scope 之外创建的值。
 - 异常：env 持有 `pending_exception`；JSC 各调用的 `JSValueRef* exception` out 参被收口为「pending」，`napi_get_and_clear_last_exception` 取走。
 - external / `napi_wrap`：用一个带 finalize 回调的自定义 `JSClass`（holder 对象，private 挂 native 指针 + finalizer）。wrap 把 holder 以一个隐藏 Symbol 键挂到目标对象上——目标被 GC 时 holder 随之被回收触发 finalize，finalizer **不在 GC 中重入 JS**，而是入队、由 tick（`napi_v8_run_event_loop_tasks`）与 env 销毁时 drain（镜像 Hermes 的 second-pass 思路）。
+- **弱引用（真实 GC 语义）**：JSC 公开 C API 无弱句柄原语，故用「holder + 共享 `RefControl`」实现：对象型 ref 在目标上挂一个 finalize holder，目标被回收时 holder 的 finalize 把 `control->alive` 置 false 并清空指针，`napi_get_reference_value` 此后返回空（napi_value NULL）。`refcount>0` 时额外 `JSValueProtect`（强保活），降到 0 解保护（转弱）。`napi_wrap` 返回的 ref 与 wrap holder 共用同一 `control`（对齐 Node 单 Reference 语义）。原始型（string/number/symbol）目标无法挂 holder 且无可观测回收，退化为全程强引用。
 - 函数 / `napi_define_class`：用带 `callAsFunction` / `callAsConstructor` 的自定义 `JSClass`（private 挂 `napi_callback` + data）。属性/访问器/特性统一经缓存的 `Object.defineProperty` 落地（C API 无直接定义访问器的入口）。
 
 **任务清单：**
@@ -668,12 +669,17 @@ else:                                    # hermes / jsc / quickjs
 - [x] `src/jsc/js_native_api_jsc.{h,cc}` + `jsc_object.cc`（手写 napi 面）
 - [x] `scripts/build.py` 启用 `--engine=jsc`（macOS CMake 分流；无引擎预构建）
 - [x] `scripts/gen_export_list.py` 支持 `--engine=jsc`；`gn/exports/napi_jsc.{lds,exp,def}`（139 符号，与 Hermes 表一致：同样略去 V8-only inspector+SAB）
+- [x] **弱引用 / finalizer 真实 GC 语义**（RefControl + holder；强引用保活、弱引用回收后置空）
 - [x] **J1 烟囱测试**：`test/jsc_smoke.cc`——`napi_run_script("1+2")==3`，外加字符串往返 / 对象属性 / JS 调原生函数；CTest `jsc_smoke` 通过（macOS x86_64）
+- [x] **弱引用测试**：`test/jsc_weakref.cc`（white-box，经内部头取 `env->ctx` 调 `JSGarbageCollect` 强制回收）——验证 wrap finalizer 回收后触发、弱 ref 置空、强 ref(refcount 1) 跨 GC 存活、unref 后转弱可回收；CTest `jsc_weakref` 通过（确定性，需对保守式栈扫描做栈卫生：目标只活在已弹出的 noinline 帧里、回收前不把值取到栈上）
+- [x] **公共 API 完整性核对**：`js_native_api.h` 全部 123 个函数均导出（0 遗漏）；`node_api.h` 的 32 个 Node 运行时扩展按 §2 范围不导出（与 V8/Hermes 后端一致）
 - [x] **符号纪律**：`nm -gU` 断言仅 139 个 `napi_*`/`node_api_*` 导出，零泄漏；`otool -L` 确认 JSC 为外部动态依赖
 
 **J1 覆盖范围：** 值（undefined/null/boolean/number/string utf8+utf16+latin1/symbol）、typeof/coerce/strict_equals、`run_script`、错误与异常（throw/create/syntax/pending/clear/last_error）、handle/escapable scope、对象与属性（named/keyed/element/property_names/prototype/freeze/seal/has_own）、数组、函数（create/call/new_instance/cb_info/new_target/instanceof/define_class/define_properties）、external/wrap/unwrap/remove_wrap/add_finalizer、引用、promise（deferred）、date、property key、instance_data。全套 ABI 符号均**有定义**（drop-in 互换），故导出列表干净链接。
 
-**J2（已 defined 为占位，返回明确状态而非崩溃，待补全）：** BigInt（JSC C API 无构造入口）、TypedArray / ArrayBuffer / DataView 的 create+info+detach、`type_tag` 系列、`get_all_property_names` 的 filter/mode/symbol 键、**弱引用**（J1 引用为强引用：`JSValueProtect` 全程保活，因 JSC 公开 C API 无弱句柄原语——故 wrap 配套的弱 ref 在 J1 下会过度保活，finalizer 仅在 env 销毁时触发；真正的 GC 弱语义留 J2）。跨平台（iOS/非 Apple 的 WebKit JSC 构建）与打包（xcframework）亦属 J2。
+**J2（已 defined 为占位，返回明确状态而非崩溃，待补全）：** BigInt（JSC C API 无构造入口）、TypedArray / ArrayBuffer / DataView 的 create+info+detach、`type_tag` 系列、`get_all_property_names` 的 filter/mode/symbol 键。跨平台（iOS/非 Apple 的 WebKit JSC 构建）与打包（xcframework）亦属 J2。**弱引用已在 J1 实现**（见上）。
+
+**V8 专属扩展的适配（待定，需拍板）：** `napi_v8/inspector.h`（8 函数，CDP 调试）与 `napi_v8/sab.h`（3 函数，SharedArrayBuffer 零拷贝）是 V8 后端独有，JSC 导出列表当前不含它们。适配方案见下节《V8 专属 API 适配》。
 
 **已验收（J1）：** `python3 scripts/build.py --engine=jsc --platform=mac --arch=x86_64` 产出 `out/build/jsc-mac-x86_64-release/src/jsc/libnapi_jsc.dylib`，仅导出 `napi_*`/`node_api_*`，`jsc_smoke` 端到端跑通。
 

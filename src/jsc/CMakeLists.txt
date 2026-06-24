@@ -40,4 +40,11 @@ if(NAPI_JSC_BUILD_TESTS)
   add_executable(jsc_smoke ${NAPI_IMPL_ROOT}/test/jsc_smoke.cc)
   target_link_libraries(jsc_smoke PRIVATE napi_flags napi_jsc)
   add_test(NAME jsc_smoke COMMAND jsc_smoke)
+
+  # White-box weak-ref / finalizer test: needs the internal header (env layout)
+  # and JSC directly (JSGarbageCollect) to force deterministic collection.
+  add_executable(jsc_weakref ${NAPI_IMPL_ROOT}/test/jsc_weakref.cc)
+  target_include_directories(jsc_weakref PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+  target_link_libraries(jsc_weakref PRIVATE napi_flags napi_jsc JSC::JSC)
+  add_test(NAME jsc_weakref COMMAND jsc_weakref)
 endif()

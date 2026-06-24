@@ -28,6 +28,7 @@
 #include <cstdint>
 #include <cstring>
 #include <deque>
+#include <memory>
 #include <mutex>
 #include <vector>
 
@@ -44,16 +45,33 @@ struct napi_handle_scope__ {
     std::vector<JSValueRef> handles;  // each JSValueProtect'd; unprotected on close
 };
 
-// ---- native holders (external values, wrapped natives) --------------------
+// ---- weak references ------------------------------------------------------
+
+// Control block shared between a napi_ref and the finalize-bearing holder
+// attached to its target object. JSC's public C API has no weak-handle
+// primitive, so this is how we learn a referenced object was collected: the
+// holder's finalize flips `alive` to false and nulls `value`. Shared via
+// shared_ptr so the ref and the holder can each outlive the other (the user may
+// delete the ref before the object dies, or vice versa).
+struct RefControl {
+    napi_env env = nullptr;
+    JSValueRef value = nullptr;  // raw pointer to the target; valid only while alive
+    bool alive = true;           // false once the target is GC-collected
+};
+
+// ---- native holders (external values, wrapped natives, weak refs) ---------
 
 // Private data of an `external_class` object: a JSC object that carries a native
-// pointer + optional finalizer. Used both for napi_create_external and as the
-// hidden holder attached to napi_wrap'd objects.
+// pointer + optional finalizer, and/or a weak-reference control block. Used for
+// napi_create_external, the hidden holder attached to napi_wrap'd objects, and
+// the holder backing a weak napi_ref. When the holder is finalized (its anchor
+// object was collected) it flips ref_control->alive and enqueues finalize_cb.
 struct ExternalState {
     napi_env env = nullptr;
     void* data = nullptr;          // native pointer (external value / wrapped native)
     napi_finalize finalize_cb = nullptr;
     void* finalize_hint = nullptr;
+    std::shared_ptr<RefControl> ref_control;  // non-null iff this holder backs a weak ref
 };
 
 // Private data of a `function_class` / `constructor_class` object: routes a JSC

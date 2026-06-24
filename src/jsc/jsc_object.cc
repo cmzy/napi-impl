@@ -13,14 +13,21 @@
 
 // ---- references / deferred (opaque types) ---------------------------------
 
-// J1: references are strong (the value is JSValueProtect'd for the ref's whole
-// life, even at refcount 0). JSC's public C API has no weak-handle primitive, so
-// true weak/finalizing references are deferred to J2; get_reference_value always
-// returns the value until the ref is deleted.
+// A napi_ref. Two flavours:
+//  * weakable (target is an object): collection is tracked via a shared
+//    RefControl + a finalize-bearing holder attached to the target. refcount>0
+//    adds a JSValueProtect (strong, keeps the target alive); refcount 0 is weak
+//    (no protect) so the target can be collected, after which `control->alive`
+//    is false and get_reference_value returns empty.
+//  * non-weakable (target is a primitive — string/number/symbol/etc.): JSC's C
+//    API can't anchor a holder on a primitive, and primitives have no observable
+//    collection, so we keep a plain strong protect for the ref's whole life.
 struct napi_ref__ {
     napi_env env;
-    JSValueRef value;
     uint32_t count;
+    bool weakable;
+    std::shared_ptr<RefControl> control;  // weakable case (shared with the holder)
+    JSValueRef strong_value;              // non-weakable case (always protected)
 };
 
 struct napi_deferred__ {
@@ -541,6 +548,47 @@ napi_status NAPI_CDECL napi_define_properties(napi_env env, napi_value object, s
 
 // ---- external / wrap ------------------------------------------------------
 
+namespace {
+// Attach a finalize-bearing external_class holder to `anchor` under `key`,
+// carrying native `data`/`finalize_cb`/`hint` and an optional weak-ref
+// `control`. The holder is GC-collected together with `anchor` (its only strong
+// referrer), at which point ExternalFinalize fires. Returns false and yields the
+// exception if the property can't be set (e.g. a frozen/non-extensible target).
+bool AttachHolder(napi_env env, JSObjectRef anchor, JSValueRef key, void* data, napi_finalize finalize_cb,
+                  void* hint, std::shared_ptr<RefControl> control, JSValueRef* exc_out) {
+    auto* st = new ExternalState{env, data, finalize_cb, hint, std::move(control)};
+    JSObjectRef holder = JSObjectMake(env->ctx, env->external_class, st);
+    JSValueRef exc = nullptr;
+    JSObjectSetPropertyForKey(env->ctx, anchor, key, holder,
+                              kJSPropertyAttributeDontEnum | kJSPropertyAttributeDontDelete, &exc);
+    if (exc != nullptr) {
+        if (exc_out != nullptr)
+            *exc_out = exc;
+        // The holder is now unreferenced; it will be GC'd and its st freed.
+        return false;
+    }
+    return true;
+}
+
+// Build a napi_ref for `v` with `count`. Object targets become weakable (a
+// holder under a fresh hidden symbol tracks their collection); primitives — and
+// objects we can't anchor a holder on — fall back to a plain strong protect.
+napi_ref MakeReference(napi_env env, JSValueRef v, uint32_t count) {
+    if (JSValueIsObject(env->ctx, v)) {
+        JSObjectRef obj = JSValueToObject(env->ctx, v, nullptr);
+        auto control = std::make_shared<RefControl>(RefControl{env, v, true});
+        JSValueRef key = JSValueMakeSymbol(env->ctx, JSStr("napi.ref"));
+        if (AttachHolder(env, obj, key, nullptr, nullptr, nullptr, control, nullptr)) {
+            if (count > 0)
+                JSValueProtect(env->ctx, v);  // strong while refcount > 0
+            return new napi_ref__{env, count, true, control, nullptr};
+        }
+    }
+    JSValueProtect(env->ctx, v);
+    return new napi_ref__{env, count, false, nullptr, v};
+}
+}  // namespace
+
 napi_status NAPI_CDECL napi_create_external(napi_env env, void* data, napi_finalize finalize_cb, void* finalize_hint,
                                             napi_value* result) {
     CHECK_ENV(env);
@@ -569,18 +617,17 @@ napi_status NAPI_CDECL napi_wrap(napi_env env, napi_value js_object, void* nativ
     CHECK_ARG(env, native_object);
     JSObjectRef obj = AsObject(env, js_object);
     RETURN_STATUS_IF_FALSE(env, obj != nullptr, napi_object_expected);
-    auto* st = new ExternalState{env, native_object, finalize_cb, finalize_hint};
-    JSObjectRef holder = JSObjectMake(env->ctx, env->external_class, st);
+    // If the caller wants a reference back, the returned (weak) ref shares the
+    // wrap holder's control block — one holder serves both the user finalizer
+    // and the ref's collection tracking (mirrors Node's single Reference).
+    std::shared_ptr<RefControl> control;
+    if (result != nullptr)
+        control = std::make_shared<RefControl>(RefControl{env, ToJS(js_object), true});
     JSValueRef exc = nullptr;
-    JSObjectSetPropertyForKey(env->ctx, obj, env->wrap_key, holder,
-                              kJSPropertyAttributeDontEnum | kJSPropertyAttributeDontDelete, &exc);
-    if (exc != nullptr)
+    if (!AttachHolder(env, obj, env->wrap_key, native_object, finalize_cb, finalize_hint, control, &exc))
         return napi_jsc_record_exception(env, exc);
-    if (result != nullptr) {
-        auto* ref = new napi_ref__{env, ToJS(js_object), 0};
-        JSValueProtect(env->ctx, ref->value);
-        *result = ref;
-    }
+    if (result != nullptr)
+        *result = new napi_ref__{env, 0, true, control, nullptr};  // weak (refcount 0)
     return napi_jsc_clear_error(env);
 }
 
@@ -613,9 +660,14 @@ napi_status NAPI_CDECL napi_remove_wrap(napi_env env, napi_value js_object, void
     RETURN_STATUS_IF_FALSE(env, st != nullptr, napi_invalid_arg);
     if (result != nullptr)
         *result = st->data;
-    st->finalize_cb = nullptr;  // detach: the user reclaims ownership
-    JSObjectRef obj = AsObject(env, js_object);
-    JSObjectDeletePropertyForKey(env->ctx, obj, env->wrap_key, nullptr);
+    st->finalize_cb = nullptr;  // detach: the user reclaims ownership, no finalizer
+    st->data = nullptr;
+    // Keep the holder attached when it also backs a weak ref, so that ref keeps
+    // tracking the (still-live) object; otherwise drop the hidden wrap property.
+    if (!st->ref_control) {
+        JSObjectRef obj = AsObject(env, js_object);
+        JSObjectDeletePropertyForKey(env->ctx, obj, env->wrap_key, nullptr);
+    }
     return napi_jsc_clear_error(env);
 }
 
@@ -626,17 +678,16 @@ napi_status NAPI_CDECL napi_add_finalizer(napi_env env, napi_value js_object, vo
     CHECK_ARG(env, finalize_cb);
     JSObjectRef obj = AsObject(env, js_object);
     RETURN_STATUS_IF_FALSE(env, obj != nullptr, napi_object_expected);
-    auto* st = new ExternalState{env, finalize_data, finalize_cb, finalize_hint};
-    JSObjectRef holder = JSObjectMake(env->ctx, env->external_class, st);
+    std::shared_ptr<RefControl> control;
+    if (result != nullptr)
+        control = std::make_shared<RefControl>(RefControl{env, ToJS(js_object), true});
     // A fresh hidden symbol per finalizer so multiple can coexist on one object.
     JSValueRef key = JSValueMakeSymbol(env->ctx, JSStr("napi.finalizer"));
-    JSObjectSetPropertyForKey(env->ctx, obj, key, holder,
-                              kJSPropertyAttributeDontEnum | kJSPropertyAttributeDontDelete, nullptr);
-    if (result != nullptr) {
-        auto* ref = new napi_ref__{env, ToJS(js_object), 0};
-        JSValueProtect(env->ctx, ref->value);
-        *result = ref;
-    }
+    JSValueRef exc = nullptr;
+    if (!AttachHolder(env, obj, key, finalize_data, finalize_cb, finalize_hint, control, &exc))
+        return napi_jsc_record_exception(env, exc);
+    if (result != nullptr)
+        *result = new napi_ref__{env, 0, true, control, nullptr};  // weak (refcount 0)
     return napi_jsc_clear_error(env);
 }
 
@@ -647,16 +698,19 @@ napi_status NAPI_CDECL napi_create_reference(napi_env env, napi_value value, uin
     CHECK_ENV(env);
     CHECK_ARG(env, value);
     CHECK_ARG(env, result);
-    auto* ref = new napi_ref__{env, ToJS(value), initial_refcount};
-    JSValueProtect(env->ctx, ref->value);  // strong for J1 (see header note)
-    *result = ref;
+    *result = MakeReference(env, ToJS(value), initial_refcount);
     return napi_jsc_clear_error(env);
 }
 
 napi_status NAPI_CDECL napi_delete_reference(napi_env env, napi_ref ref) {
     CHECK_ENV(env);
     CHECK_ARG(env, ref);
-    JSValueUnprotect(env->ctx, ref->value);
+    if (ref->weakable) {
+        if (ref->count > 0 && ref->control && ref->control->alive)
+            JSValueUnprotect(env->ctx, ref->control->value);  // release our strong hold
+    } else {
+        JSValueUnprotect(env->ctx, ref->strong_value);
+    }
     delete ref;
     return napi_jsc_clear_error(env);
 }
@@ -665,6 +719,9 @@ napi_status NAPI_CDECL napi_reference_ref(napi_env env, napi_ref ref, uint32_t* 
     CHECK_ENV(env);
     CHECK_ARG(env, ref);
     ref->count += 1;
+    // 0 -> 1 re-strengthens a weak ref (no-op if the target is already gone).
+    if (ref->weakable && ref->count == 1 && ref->control && ref->control->alive)
+        JSValueProtect(env->ctx, ref->control->value);
     if (result != nullptr)
         *result = ref->count;
     return napi_jsc_clear_error(env);
@@ -675,6 +732,9 @@ napi_status NAPI_CDECL napi_reference_unref(napi_env env, napi_ref ref, uint32_t
     CHECK_ARG(env, ref);
     RETURN_STATUS_IF_FALSE(env, ref->count > 0, napi_generic_failure);
     ref->count -= 1;
+    // 1 -> 0 weakens: drop the protect so the target becomes collectible.
+    if (ref->weakable && ref->count == 0 && ref->control && ref->control->alive)
+        JSValueUnprotect(env->ctx, ref->control->value);
     if (result != nullptr)
         *result = ref->count;
     return napi_jsc_clear_error(env);
@@ -684,7 +744,12 @@ napi_status NAPI_CDECL napi_get_reference_value(napi_env env, napi_ref ref, napi
     CHECK_ENV(env);
     CHECK_ARG(env, ref);
     CHECK_ARG(env, result);
-    *result = napi_jsc_add_handle(env, ref->value);
+    if (ref->weakable) {
+        // After the target is collected the ref is empty: napi_value NULL.
+        *result = (ref->control && ref->control->alive) ? napi_jsc_add_handle(env, ref->control->value) : nullptr;
+    } else {
+        *result = napi_jsc_add_handle(env, ref->strong_value);
+    }
     return napi_jsc_clear_error(env);
 }
 

@@ -77,6 +77,12 @@ void ExternalFinalize(JSObjectRef obj) {
     auto* st = static_cast<ExternalState*>(JSObjectGetPrivate(obj));
     if (st == nullptr)
         return;
+    // The anchor object was collected: empty any weak ref pointing at it, then
+    // defer the user finalizer out of GC (we must not re-enter JS here).
+    if (st->ref_control) {
+        st->ref_control->alive = false;
+        st->ref_control->value = nullptr;
+    }
     if (st->finalize_cb != nullptr && st->env != nullptr) {
         std::lock_guard<std::mutex> lk(st->env->finalizer_mu);
         st->env->pending_finalizers.push_back({st->finalize_cb, st->data, st->finalize_hint});
