@@ -1,0 +1,23 @@
+diff --git a/API/hermes_node_api/hermes_node_api.cpp b/API/hermes_node_api/hermes_node_api.cpp
+index 5090a606..b68b1593 100644
+--- a/API/hermes_node_api/hermes_node_api.cpp
++++ b/API/hermes_node_api/hermes_node_api.cpp
+@@ -3909,11 +3927,17 @@ napi_status NodeApiEnvironment::createTypedArray(
+         "Invalid typed array length");
+   }
+   using TypedArray = vm::JSTypedArray<TElement, CellKind>;
++  // Root `buffer` across the TypedArray allocation below. `TypedArray::create`
++  // can trigger a young-gen GC that relocates `buffer` (a raw JSArrayBuffer*);
++  // using the stale pointer in setBuffer would install an invalid GCPointer
++  // (SLOW_DEBUG asserts `gc.validPointer`; release silently corrupts the heap).
++  // The caller (napi_create_typedarray) holds a GCScope, so this Handle is valid.
++  vm::Handle<vm::JSArrayBuffer> bufferHandle = runtime_.makeHandle(buffer);
+   *result = TypedArray::create(runtime_, TypedArray::getPrototype(runtime_));
+   vm::JSTypedArrayBase::setBuffer(
+       runtime_,
+       result->get(),
+-      buffer,
++      bufferHandle.get(),
+       byteOffset,
+       length * elementSize,
+       static_cast<uint8_t>(elementSize));
