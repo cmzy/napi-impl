@@ -99,31 +99,55 @@ namespace napi_v8_priv {
     // Set by the optional inspector module; see js_native_api_v8_internals.h.
     void (*g_inspector_tick_hook)(napi_env__ *env) = nullptr;
 
+    namespace {
+        // Per-thread cache of the two Privates used on the hot
+        // napi_wrap/napi_unwrap/type_tag path (v8::Private::ForApi does a string
+        // intern + private-symbol registry lookup). A V8 isolate is single-threaded
+        // and bound to one thread, so a thread_local cache keyed by the live isolate
+        // is correct *while that isolate is alive*.
+        //
+        // CAUTION: a v8::Isolate* address is REUSED by the allocator after the
+        // previous isolate is disposed. Keying the cache on the raw pointer alone is
+        // therefore unsafe across dispose: a new isolate that reuses a cached
+        // address would be a false cache hit, returning v8::Eternal Privates that
+        // belong to the destroyed isolate (dangling handles) → crash inside
+        // HasPrivate/SetPrivate on the next wrap. The cache is invalidated on isolate
+        // teardown via ForgetIsolatePrivateKeys() (called from napi_destroy_runtime),
+        // which clears cached_iso so the next call rebuilds for the new isolate.
+        // Lifted to namespace scope (was function-static) so the teardown hook can
+        // reach it.
+        thread_local v8::Isolate *g_pk_cached_iso = nullptr;
+        thread_local v8::Eternal<v8::Private> g_pk_cached_wrapper;
+        thread_local v8::Eternal<v8::Private> g_pk_cached_type_tag;
+    } // namespace
+
     v8::Local<v8::Private> GetPrivateKey(v8::Local<v8::Context> ctx, PrivateKeyKind kind) {
         // V8 14.x removed Context::GetIsolate(); use the active isolate (callers
         // are inside an Isolate::Scope at this point).
         v8::Isolate *iso = v8::Isolate::GetCurrent();
         (void) ctx;
-        // Cache the two Privates per isolate: v8::Private::ForApi does a string
-        // intern + private-symbol registry lookup, and this is on the hot
-        // napi_wrap/napi_unwrap/type_tag path. A V8 isolate is single-threaded and
-        // bound to one thread, so a thread_local cache keyed by the isolate is
-        // correct (the isolate check handles the rare multi-isolate-per-thread
-        // case). v8::Eternal lives for the isolate's lifetime.
-        static thread_local v8::Isolate *cached_iso = nullptr;
-        static thread_local v8::Eternal<v8::Private> cached_wrapper;
-        static thread_local v8::Eternal<v8::Private> cached_type_tag;
-        if (cached_iso != iso) {
-            cached_iso = iso;
+        if (g_pk_cached_iso != iso) {
+            g_pk_cached_iso = iso;
             auto mk = [iso](const char *name) {
                 v8::Local<v8::String> s =
                         v8::String::NewFromUtf8(iso, name, v8::NewStringType::kInternalized).ToLocalChecked();
                 return v8::Private::ForApi(iso, s);
             };
-            cached_wrapper.Set(iso, mk("node:napi_v8::wrapper"));
-            cached_type_tag.Set(iso, mk("node:napi_v8::type_tag"));
+            g_pk_cached_wrapper.Set(iso, mk("node:napi_v8::wrapper"));
+            g_pk_cached_type_tag.Set(iso, mk("node:napi_v8::type_tag"));
         }
-        return (kind == PrivateKeyKind::wrapper) ? cached_wrapper.Get(iso) : cached_type_tag.Get(iso);
+        return (kind == PrivateKeyKind::wrapper) ? g_pk_cached_wrapper.Get(iso) : g_pk_cached_type_tag.Get(iso);
+    }
+
+    void ForgetIsolatePrivateKeys(v8::Isolate *iso) {
+        // Runs on the isolate's owning thread just before Isolate::Dispose(), so it
+        // operates on the correct thread_local cache. Clearing the cached pointer
+        // forces the next GetPrivateKey() to rebuild fresh Privates for whatever
+        // isolate next occupies this thread — even one that reuses this address. The
+        // stale Eternals are never read again: every lookup goes through the
+        // cached_iso guard first, which now misses.
+        if (g_pk_cached_iso == iso)
+            g_pk_cached_iso = nullptr;
     }
 
 } // namespace napi_v8_priv
@@ -188,8 +212,13 @@ napi_status NAPI_CDECL napi_create_runtime(napi_platform platform, napi_runtime 
 napi_status NAPI_CDECL napi_destroy_runtime(napi_runtime runtime) {
     if (runtime == nullptr)
         return napi_invalid_arg;
-    if (runtime->isolate != nullptr)
+    if (runtime->isolate != nullptr) {
+        // Invalidate the per-thread Private cache before the isolate's address can be
+        // reused by a future isolate (else a reused address is a false cache hit on a
+        // dangling Private → crash in the next napi_wrap). Same thread as Dispose().
+        napi_v8_priv::ForgetIsolatePrivateKeys(runtime->isolate);
         runtime->isolate->Dispose();
+    }
     delete runtime;
     return napi_ok;
 }

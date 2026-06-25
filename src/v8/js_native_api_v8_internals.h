@@ -55,6 +55,13 @@ namespace napi_v8_priv {
     };
     v8::Local<v8::Private> GetPrivateKey(v8::Local<v8::Context> ctx, PrivateKeyKind kind);
 
+    // Invalidate the per-thread GetPrivateKey cache for an isolate that is about to
+    // be disposed. MUST be called on the isolate's owning thread immediately before
+    // v8::Isolate::Dispose() (see napi_destroy_runtime). A disposed isolate's
+    // address can be reused by a later isolate; without this, a reused address is a
+    // false cache hit returning Privates that belong to the dead isolate → crash.
+    void ForgetIsolatePrivateKeys(v8::Isolate *iso);
+
     // Optional inspector tick hook. The inspector module (an optional source_set)
     // sets this when an inspector is active so napi_v8_run_event_loop_tasks() drains
     // queued CDP messages on the V8 thread each tick. Null when the inspector is not
