@@ -152,6 +152,16 @@ namespace napi_v8 {
                         return;
                     continue;
                 }
+#ifdef SO_NOSIGPIPE
+                // A debugger client that disconnects mid-session must not raise
+                // SIGPIPE and terminate the host process. macOS has no
+                // MSG_NOSIGNAL, so suppress it per-socket (Linux uses the send
+                // flag below).
+                {
+                    int on = 1;
+                    setsockopt(s, SOL_SOCKET, SO_NOSIGPIPE, &on, sizeof(on));
+                }
+#endif
                 ServeConnection(s);
                 ::close(s);
                 has_client_.store(false);
@@ -159,9 +169,14 @@ namespace napi_v8 {
         }
 
         bool InspectorServer::SendHttp(int sock, const std::string &s) {
+#ifdef MSG_NOSIGNAL
+            const int send_flags = MSG_NOSIGNAL;  // Linux: suppress SIGPIPE per send
+#else
+            const int send_flags = 0;             // macOS relies on SO_NOSIGPIPE (set on accept)
+#endif
             ssize_t off = 0;
             while (off < (ssize_t) s.size()) {
-                ssize_t n = ::send(sock, s.data() + off, s.size() - off, 0);
+                ssize_t n = ::send(sock, s.data() + off, s.size() - off, send_flags);
                 if (n <= 0)
                     return false;
                 off += n;
