@@ -78,6 +78,12 @@ if(NAPI_JSC_BUILD_TESTS)
     add_executable(fast_call_fallback_gtest ${NAPI_IMPL_ROOT}/test/fast_call_fallback_gtest.cc)
     target_link_libraries(fast_call_fallback_gtest PRIVATE napi_flags napi_jsc GTest::gtest_main)
     add_test(NAME fast_call_fallback_gtest COMMAND fast_call_fallback_gtest)
+
+    # Common core napi_* surface not exercised by the conformance suite on this
+    # backend (utf16/latin1 strings, coercions, errors, typeof, ...).
+    add_executable(napi_core_gtest ${NAPI_IMPL_ROOT}/test/napi_core_gtest.cc)
+    target_link_libraries(napi_core_gtest PRIVATE napi_flags napi_jsc GTest::gtest_main)
+    add_test(NAME napi_core_gtest COMMAND napi_core_gtest)
   endif()
 
   # The upstream js-native-api host runner (test/runner.cc), built for JSC via
