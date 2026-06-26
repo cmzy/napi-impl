@@ -75,6 +75,7 @@ foreach(t,
           "napi_core_gtest",
           "napi_object_gtest",
           "napi_typedarray_gtest",
+          "napi_more_gtest",
           "node_api_extras_gtest",
         ]) {
   executable(t) {
@@ -100,6 +101,7 @@ group("test") {
     ":napi_core_gtest",
     ":napi_object_gtest",
     ":napi_typedarray_gtest",
+    ":napi_more_gtest",
     ":node_api_extras_gtest",
     ":run",
     ":runner",

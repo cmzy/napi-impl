@@ -95,6 +95,12 @@ if(NAPI_JSC_BUILD_TESTS)
     add_executable(napi_typedarray_gtest ${NAPI_IMPL_ROOT}/test/napi_typedarray_gtest.cc)
     target_link_libraries(napi_typedarray_gtest PRIVATE napi_flags napi_jsc GTest::gtest_main)
     add_test(NAME napi_typedarray_gtest COMMAND napi_typedarray_gtest)
+
+    # More core surface: has_named_property, get_prototype, arrays, external
+    # strings, post_finalizer.
+    add_executable(napi_more_gtest ${NAPI_IMPL_ROOT}/test/napi_more_gtest.cc)
+    target_link_libraries(napi_more_gtest PRIVATE napi_flags napi_jsc GTest::gtest_main)
+    add_test(NAME napi_more_gtest COMMAND napi_more_gtest)
   endif()
 
   # The upstream js-native-api host runner (test/runner.cc), built for JSC via
