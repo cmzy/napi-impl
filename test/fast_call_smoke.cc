@@ -163,6 +163,35 @@ napi_value generic_slow(napi_env env, napi_callback_info info) {
     return r;
 }
 
+// --- scalar arg/return type matrix -----------------------------------------
+// The other fast methods use only float64 + jsvalue; these cover CTypeOf for
+// the remaining scalar kinds (int32/uint32/float32/bool/int64/uint64), as both
+// argument and (where representable) return types.
+int32_t i32_fast(napi_fast_recv recv, int32_t a, int32_t b) {
+    (void)recv;
+    return a + b;
+}
+uint32_t u32_fast(napi_fast_recv recv, uint32_t a) {
+    (void)recv;
+    return a + 1u;
+}
+float f32_fast(napi_fast_recv recv, float a) {
+    (void)recv;
+    return a + 0.5f;
+}
+bool bool_fast(napi_fast_recv recv, bool a) {
+    (void)recv;
+    return !a;
+}
+double i64_fast(napi_fast_recv recv, int64_t a) {
+    (void)recv;
+    return static_cast<double>(a + 1);
+}
+double u64_fast(napi_fast_recv recv, uint64_t a) {
+    (void)recv;
+    return static_cast<double>(a + 1);
+}
+
 // --- fast accessor getter (napi_define_fast_accessor) ----------------------
 // Both paths return 777.0 so correctness is path-agnostic; the counters reveal
 // whether V8 inlined the C fast entry on the accessor access site.
@@ -668,6 +697,61 @@ TEST_F(FastCall, UnsetInternalField) {
     EXPECT_TRUE(raw_null == 1.0) << "value_unwrap of a non-fast-wrapped instance is NULL (no garbage)";
     EXPECT_TRUE(null_null == 1.0) << "value_unwrap of JS null is NULL";
     EXPECT_TRUE(other_null == 0.0) << "value_unwrap of a fast-wrapped instance is non-NULL";
+}
+
+// --- scalar type matrix: register one fast fn per scalar kind (drives CTypeOf
+// for each), then force the fast path and check the C entry's result.
+TEST_F(FastCall, ScalarArgTypes) {
+    napi_value g = nullptr;
+    ASSERT_EQ(napi_get_global(env_, &g), napi_ok);
+
+    const napi_fast_type i32a[] = {napi_fast_receiver, napi_fast_int32, napi_fast_int32};
+    const napi_fast_signature i32s{napi_fast_int32, 3, i32a, false};
+    ASSERT_EQ(define_method(env_, g, "fi32", generic_slow, &i32s, reinterpret_cast<const void*>(&i32_fast)), napi_ok);
+    const napi_fast_type u32a[] = {napi_fast_receiver, napi_fast_uint32};
+    const napi_fast_signature u32s{napi_fast_uint32, 2, u32a, false};
+    ASSERT_EQ(define_method(env_, g, "fu32", generic_slow, &u32s, reinterpret_cast<const void*>(&u32_fast)), napi_ok);
+    const napi_fast_type f32a[] = {napi_fast_receiver, napi_fast_float32};
+    const napi_fast_signature f32s{napi_fast_float32, 2, f32a, false};
+    ASSERT_EQ(define_method(env_, g, "ff32", generic_slow, &f32s, reinterpret_cast<const void*>(&f32_fast)), napi_ok);
+    const napi_fast_type boola[] = {napi_fast_receiver, napi_fast_bool};
+    const napi_fast_signature bools{napi_fast_bool, 2, boola, false};
+    ASSERT_EQ(define_method(env_, g, "fbool", generic_slow, &bools, reinterpret_cast<const void*>(&bool_fast)), napi_ok);
+    const napi_fast_type i64a[] = {napi_fast_receiver, napi_fast_int64};
+    const napi_fast_signature i64s{napi_fast_float64, 2, i64a, false};
+    ASSERT_EQ(define_method(env_, g, "fi64", generic_slow, &i64s, reinterpret_cast<const void*>(&i64_fast)), napi_ok);
+    const napi_fast_type u64a[] = {napi_fast_receiver, napi_fast_uint64};
+    const napi_fast_signature u64s{napi_fast_float64, 2, u64a, false};
+    ASSERT_EQ(define_method(env_, g, "fu64", generic_slow, &u64s, reinterpret_cast<const void*>(&u64_fast)), napi_ok);
+
+    const char* js =
+            "function hi(a,b){return fi32(a,b);} function hu(a){return fu32(a);}"
+            "function hf(a){return ff32(a);} function hb(a){return fbool(a);}"
+            "function h6(a){return fi64(a);} function h7(a){return fu64(a);}"
+            "for (const w of [hi,hu,hf,hb,h6,h7]) %PrepareFunctionForOptimization(w);"
+            "hi(1,2);hu(1);hf(1);hb(true);h6(1);h7(1);"
+            "hi(1,2);hu(1);hf(1);hb(true);h6(1);h7(1);"
+            "for (const w of [hi,hu,hf,hb,h6,h7]) %OptimizeFunctionOnNextCall(w);"
+            "[hi(10,20), hu(41), hf(1.5), hb(false), h6(100), h7(200)];";
+    napi_value r = nullptr;
+    ASSERT_EQ(run(env_, js, &r), napi_ok);
+    napi_value e[6];
+    for (int i = 0; i < 6; ++i)
+        ASSERT_EQ(napi_get_element(env_, r, i, &e[i]), napi_ok);
+    double i32v = 0, u32v = 0, f32v = 0, i64v = 0, u64v = 0;
+    bool bv = false;
+    ASSERT_EQ(napi_get_value_double(env_, e[0], &i32v), napi_ok);
+    ASSERT_EQ(napi_get_value_double(env_, e[1], &u32v), napi_ok);
+    ASSERT_EQ(napi_get_value_double(env_, e[2], &f32v), napi_ok);
+    ASSERT_EQ(napi_get_value_bool(env_, e[3], &bv), napi_ok);
+    ASSERT_EQ(napi_get_value_double(env_, e[4], &i64v), napi_ok);
+    ASSERT_EQ(napi_get_value_double(env_, e[5], &u64v), napi_ok);
+    EXPECT_EQ(i32v, 30.0) << "int32 fast arg+return";
+    EXPECT_EQ(u32v, 42.0) << "uint32 fast arg+return";
+    EXPECT_EQ(f32v, 2.0) << "float32 fast arg+return";
+    EXPECT_TRUE(bv) << "bool fast arg+return (!false)";
+    EXPECT_EQ(i64v, 101.0) << "int64 fast arg";
+    EXPECT_EQ(u64v, 201.0) << "uint64 fast arg";
 }
 
 // --- Leak amplifier: create+drop a batch of fast functions, force GC, drain

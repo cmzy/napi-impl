@@ -93,6 +93,19 @@ __attribute__((noinline)) napi_ref make_ref(napi_env env, uint32_t count) {
   return ref;
 }
 
+// Attach a finalizer via napi_add_finalizer (not napi_wrap); object lives only
+// in this popped frame so it is collectible after return.
+__attribute__((noinline)) napi_ref make_with_finalizer(napi_env env) {
+  napi_handle_scope scope = nullptr;
+  napi_open_handle_scope(env, &scope);
+  napi_value obj = nullptr;
+  napi_create_object(env, &obj);
+  napi_ref ref = nullptr;
+  napi_add_finalizer(env, obj, &g_payload, on_finalize, nullptr, &ref);
+  napi_close_handle_scope(env, scope);
+  return ref;
+}
+
 // --- A. wrap finalizer + weak ref ----------------------------------------
 // Note: we must NOT retrieve the ref before forcing GC — doing so would leave
 // the target pointer in a live stack frame and JSC's conservative collector
@@ -129,6 +142,16 @@ TEST_F(NapiExtras, WeakReferenceEmptiesAfterGc) {
   force_gc(env_);
   EXPECT_TRUE(ref_is_empty(env_, weak)) << "C: weak reference should read empty after collection";
   ASSERT_EQ(napi_delete_reference(env_, weak), napi_ok);
+}
+
+// --- D. napi_add_finalizer runs once after the object is collected --------
+TEST_F(NapiExtras, AddFinalizerRunsAfterGc) {
+  g_finalized = 0;
+  napi_ref ref = make_with_finalizer(env_);
+  EXPECT_TRUE(g_finalized == 0) << "D: add_finalizer must not run before collection";
+  force_gc(env_);
+  EXPECT_TRUE(g_finalized == 1) << "D: add_finalizer should have run exactly once after GC";
+  ASSERT_EQ(napi_delete_reference(env_, ref), napi_ok);
 }
 
 }  // namespace
