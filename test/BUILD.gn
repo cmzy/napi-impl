@@ -66,11 +66,41 @@ executable("js_native_api_suite_gtest") {
   ]
 }
 
+# Engine-neutral gtest suites (shared NapiExtras fixture) — also built on V8 to
+# exercise the src/v8/*.cc napi surface directly (raising coverage the same way
+# they do for JSC). The fixture shares one platform/runtime per process (V8's is
+# once-per-process) and gives each test a fresh env.
+foreach(t,
+        [
+          "napi_core_gtest",
+          "napi_object_gtest",
+          "napi_typedarray_gtest",
+          "node_api_extras_gtest",
+        ]) {
+  executable(t) {
+    testonly = true
+    sources = [ "$t.cc" ]
+    configs += [
+      "//napi/gn:napi_flags",
+      "//:external_config",
+    ]
+    deps = [
+      "//napi/src/v8:napi_v8",
+      "//third_party/googletest:gtest",
+      "//third_party/googletest:gtest_main",
+    ]
+  }
+}
+
 group("test") {
   testonly = true
   deps = [
     ":fast_call_gtest",
     ":js_native_api_suite_gtest",
+    ":napi_core_gtest",
+    ":napi_object_gtest",
+    ":napi_typedarray_gtest",
+    ":node_api_extras_gtest",
     ":run",
     ":runner",
     ":wrap_bench",

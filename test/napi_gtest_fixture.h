@@ -21,22 +21,29 @@ namespace {
 
 class NapiExtras : public ::testing::Test {
  protected:
-  napi_platform platform_ = nullptr;
-  napi_runtime runtime_ = nullptr;
+  // The platform + runtime are created ONCE per process: V8's platform/isolate
+  // init is once-per-process (v8::Initialize/Dispose can't repeat), so they
+  // cannot be torn down/recreated per test. They are intentionally leaked at
+  // process exit. Each test still gets a fresh env (a fresh context) + handle
+  // scope for isolation. Works on both V8 and JSC.
+  inline static napi_platform platform_ = nullptr;
+  inline static napi_runtime runtime_ = nullptr;
   napi_env env_ = nullptr;
   napi_handle_scope scope_ = nullptr;
 
+  static void SetUpTestSuite() {
+    if (platform_ == nullptr) {
+      ASSERT_EQ(napi_create_platform(0, nullptr, 0, nullptr, nullptr, false, &platform_), napi_ok);
+      ASSERT_EQ(napi_create_runtime(platform_, &runtime_), napi_ok);
+    }
+  }
   void SetUp() override {
-    ASSERT_EQ(napi_create_platform(0, nullptr, 0, nullptr, nullptr, false, &platform_), napi_ok);
-    ASSERT_EQ(napi_create_runtime(platform_, &runtime_), napi_ok);
     ASSERT_EQ(napi_create_env(runtime_, &env_), napi_ok);
     ASSERT_EQ(napi_open_handle_scope(env_, &scope_), napi_ok);
   }
   void TearDown() override {
     if (scope_) napi_close_handle_scope(env_, scope_);
     if (env_) napi_destroy_env(env_);
-    if (runtime_) napi_destroy_runtime(runtime_);
-    if (platform_) napi_destroy_platform(platform_);
   }
 
   napi_value Run(const char* code) {
