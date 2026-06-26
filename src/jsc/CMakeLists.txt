@@ -39,30 +39,36 @@ endif()
 option(NAPI_JSC_BUILD_TESTS "Build the JSC backend smoke test" ON)
 if(NAPI_JSC_BUILD_TESTS)
   enable_testing()
-  add_executable(jsc_smoke ${NAPI_IMPL_ROOT}/test/jsc_smoke.cc)
-  target_link_libraries(jsc_smoke PRIVATE napi_flags napi_jsc)
-  add_test(NAME jsc_smoke COMMAND jsc_smoke)
 
-  # White-box weak-ref / finalizer test: needs the internal header (env layout)
-  # and JSC directly (JSGarbageCollect) to force deterministic collection.
-  add_executable(jsc_weakref ${NAPI_IMPL_ROOT}/test/jsc_weakref.cc)
-  target_include_directories(jsc_weakref PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-  target_link_libraries(jsc_weakref PRIVATE napi_flags napi_jsc JSC::JSC)
-  add_test(NAME jsc_weakref COMMAND jsc_weakref)
-
-  # V8-compat extensions: SharedArrayBuffer (real zero-copy) + Inspector.
-  add_executable(jsc_v8compat ${NAPI_IMPL_ROOT}/test/jsc_v8compat.cc)
-  target_link_libraries(jsc_v8compat PRIVATE napi_flags napi_jsc)
-  add_test(NAME jsc_v8compat COMMAND jsc_v8compat)
-
-  # ArrayBuffer / TypedArray / DataView, BigInt, type tags, all_property_names.
-  add_executable(jsc_buffers_test ${NAPI_IMPL_ROOT}/test/jsc_buffers.cc)
-  target_link_libraries(jsc_buffers_test PRIVATE napi_flags napi_jsc)
-  add_test(NAME jsc_buffers COMMAND jsc_buffers_test)
-
-  # gtest unit tests for the experimental core calls + fast accessor (coverage
-  # target). Only when -DNAPI_GTEST=ON (googletest fetched at the top level).
+  # gtest-based unit tests. The former bespoke main()+CHECK/EXPECT smoke tests
+  # (jsc_smoke / jsc_weakref / jsc_v8compat / jsc_buffers) were converted to
+  # googletest and now link GTest::gtest_main alongside node_api_extras_gtest.
+  # All are gated on -DNAPI_GTEST=ON (googletest is fetched at the top level); a
+  # plain configure without NAPI_GTEST still succeeds — these tests are skipped.
   if(NAPI_GTEST)
+    add_executable(jsc_smoke ${NAPI_IMPL_ROOT}/test/jsc_smoke.cc)
+    target_link_libraries(jsc_smoke PRIVATE napi_flags napi_jsc GTest::gtest_main)
+    add_test(NAME jsc_smoke COMMAND jsc_smoke)
+
+    # White-box weak-ref / finalizer test: needs the internal header (env layout)
+    # and JSC directly (JSGarbageCollect) to force deterministic collection.
+    add_executable(jsc_weakref ${NAPI_IMPL_ROOT}/test/jsc_weakref.cc)
+    target_include_directories(jsc_weakref PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+    target_link_libraries(jsc_weakref PRIVATE napi_flags napi_jsc JSC::JSC GTest::gtest_main)
+    add_test(NAME jsc_weakref COMMAND jsc_weakref)
+
+    # V8-compat extensions: SharedArrayBuffer (real zero-copy) + Inspector.
+    add_executable(jsc_v8compat ${NAPI_IMPL_ROOT}/test/jsc_v8compat.cc)
+    target_link_libraries(jsc_v8compat PRIVATE napi_flags napi_jsc GTest::gtest_main)
+    add_test(NAME jsc_v8compat COMMAND jsc_v8compat)
+
+    # ArrayBuffer / TypedArray / DataView, BigInt, type tags, all_property_names.
+    add_executable(jsc_buffers_test ${NAPI_IMPL_ROOT}/test/jsc_buffers.cc)
+    target_link_libraries(jsc_buffers_test PRIVATE napi_flags napi_jsc GTest::gtest_main)
+    add_test(NAME jsc_buffers COMMAND jsc_buffers_test)
+
+    # gtest unit tests for the experimental core calls + fast accessor (coverage
+    # target).
     add_executable(node_api_extras_gtest ${NAPI_IMPL_ROOT}/test/node_api_extras_gtest.cc)
     target_link_libraries(node_api_extras_gtest PRIVATE napi_flags napi_jsc GTest::gtest_main)
     add_test(NAME node_api_extras_gtest COMMAND node_api_extras_gtest)
@@ -80,5 +86,19 @@ if(NAPI_JSC_BUILD_TESTS)
     # Keep it a bare CLI executable (not a .app bundle) on iOS so scripts/run_tests
     # finds it at src/jsc/runner and simctl spawn can exec it directly.
     set_target_properties(runner PROPERTIES MACOSX_BUNDLE OFF)
+
+    # gtest harness over the upstream js-native-api conformance suite: one gtest
+    # case per (module, test.js), each spawning `runner`. The addons must be built
+    # first (scripts/build_tests.py); unbuilt modules report as SKIP.
+    if(NAPI_GTEST)
+      add_executable(js_native_api_suite_gtest ${NAPI_IMPL_ROOT}/test/js_native_api_suite_gtest.cc)
+      target_link_libraries(js_native_api_suite_gtest PRIVATE GTest::gtest)
+      target_compile_definitions(js_native_api_suite_gtest PRIVATE
+        "NAPI_RUNNER_PATH=\"$<TARGET_FILE:runner>\""
+        "NAPI_TESTS_DIR=\"${NAPI_IMPL_ROOT}/test/js-native-api\""
+        "NAPI_SO_SUBDIR=\"Release\"")
+      add_dependencies(js_native_api_suite_gtest runner)
+      add_test(NAME js_native_api_suite COMMAND js_native_api_suite_gtest)
+    endif()
   endif()
 endif()
