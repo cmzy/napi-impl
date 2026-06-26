@@ -60,6 +60,14 @@ if(NAPI_JSC_BUILD_TESTS)
   target_link_libraries(jsc_buffers_test PRIVATE napi_flags napi_jsc)
   add_test(NAME jsc_buffers COMMAND jsc_buffers_test)
 
+  # gtest unit tests for the experimental core calls + fast accessor (coverage
+  # target). Only when -DNAPI_GTEST=ON (googletest fetched at the top level).
+  if(NAPI_GTEST)
+    add_executable(node_api_extras_gtest ${NAPI_IMPL_ROOT}/test/node_api_extras_gtest.cc)
+    target_link_libraries(node_api_extras_gtest PRIVATE napi_flags napi_jsc GTest::gtest_main)
+    add_test(NAME node_api_extras_gtest COMMAND node_api_extras_gtest)
+  endif()
+
   # The upstream js-native-api host runner (test/runner.cc), built for JSC via
   # NAPI_RUNNER_JSC: same engine-agnostic source as the V8/Hermes paths, with a
   # JSGarbageCollect-backed gc(). Needs JSC::JSC directly (JSGarbageCollect) and
