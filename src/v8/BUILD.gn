@@ -16,7 +16,10 @@ shared_library("napi_v8") {
   ]
 
   if (is_apple) {
-    output_name = "NapiV8"
+    # Match the snake_case used by every other platform/engine lib
+    # (libnapi_v8.so / libnapi_jsc.dylib / libnapi_hermes.dylib). The Apple
+    # *framework* stays CamelCase "NapiV8" (see scripts/package_apple.py).
+    output_name = "napi_v8"
     ldflags = [
       "-Wl,-exported_symbols_list," +
           rebase_path("//napi/gn/exports/napi_v8.exp", root_build_dir),

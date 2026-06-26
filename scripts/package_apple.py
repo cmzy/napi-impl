@@ -4,7 +4,7 @@
 Engine-aware (v8 | hermes); the two backends differ only in artifact names and
 the public-header surface:
 
-  v8     -> NapiV8.framework      (libNapiV8.dylib);  ships napi/ + the full
+  v8     -> NapiV8.framework      (libnapi_v8.dylib);  ships napi/ + the full
             napi_v8/ embedding+inspector+sab headers.
   hermes -> NapiHermes.framework  (libnapi_hermes.dylib);  ships napi/ + only
             napi_v8/embedding.h (Hermes has no inspector / SharedArrayBuffer ext).
@@ -18,7 +18,7 @@ Inputs (per arch, built by scripts/build.py beforehand):
   out/build/<engine>-ios-arm64-release/.../<dylib>       (device)
 
   where <...> is the engine's build subdir (v8: the build root; hermes:
-  src/hermes/) and <dylib> is libNapiV8.dylib / libnapi_hermes.dylib.
+  src/hermes/) and <dylib> is libnapi_v8.dylib / libnapi_hermes.dylib.
 
 Layout (macOS framework, bundle):
   <Fw>-macos.framework/
@@ -53,7 +53,7 @@ DIST = ROOT / "out" / "dist"
 # dir to reach the dylib (Hermes' CMake drops it under src/hermes/).
 ENGINES = {
     "v8": {
-        "dylib": "libNapiV8.dylib",
+        "dylib": "libnapi_v8.dylib",
         "fw": "NapiV8",
         "bundle_id": "com.napi.v8",
         "subdir": (),

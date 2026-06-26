@@ -186,8 +186,7 @@ def build_v8_path(platform: str, arch: str, config: str,
     # Mirror artifacts to repo's out/build/.
     dist = ROOT / "out" / "build" / f"v8-{platform}-{arch}-{config}"
     dist.mkdir(parents=True, exist_ok=True)
-    for name in ("libNapiV8.dylib", "libnapi_v8.so",
-                 "napi_v8.dll", "NapiV8.dll"):
+    for name in ("libnapi_v8.dylib", "libnapi_v8.so", "napi_v8.dll"):
         src = gn_out_abs / name
         if src.exists():
             shutil.copy2(src, dist / name)

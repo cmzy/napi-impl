@@ -73,7 +73,7 @@ def main():
     if not runner.exists():
         sys.exit(f"runner not built: {runner}")
 
-    # libNapiV8.dylib has install_name="./libNapiV8.dylib"; help dyld find it.
+    # libnapi_v8.dylib has install_name="./libnapi_v8.dylib"; help dyld find it.
     env = os.environ.copy()
     env["DYLD_LIBRARY_PATH"] = (
         str(runner.parent) + os.pathsep + env.get("DYLD_LIBRARY_PATH", ""))

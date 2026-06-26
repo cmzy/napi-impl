@@ -130,10 +130,10 @@ def build_one(name: str, sources, feature_dir: Path, libdir: Path,
         lib_link_name = "napi_hermes"
     elif (libdir / "libnapi_jsc.dylib").exists():
         lib_link_name = "napi_jsc"
-    elif (libdir / "libnapi_v8.so").exists():
+    elif (libdir / "libnapi_v8.so").exists() or (libdir / "libnapi_v8.dylib").exists():
         lib_link_name = "napi_v8"
     else:
-        lib_link_name = "NapiV8"
+        lib_link_name = "napi_v8"
     cmd = [
         cxx,
         "-shared", "-fPIC", "-fvisibility=hidden",
@@ -163,13 +163,13 @@ def build_one(name: str, sources, feature_dir: Path, libdir: Path,
     if res.returncode != 0:
         print(f"[fail-build] {name}\n{res.stderr}", file=sys.stderr)
         return False
-    # libNapiV8.dylib was linked with install_name="./libNapiV8.dylib", which
+    # libnapi_v8.dylib was linked with install_name="./libnapi_v8.dylib", which
     # dyld can't resolve via @rpath. Rewrite the dep to absolute path.
-    if (libdir / "libNapiV8.dylib").exists():
+    if (libdir / "libnapi_v8.dylib").exists():
         subprocess.run(
             ["install_name_tool", "-change",
-             "./libNapiV8.dylib",
-             str(libdir / "libNapiV8.dylib"),
+             "./libnapi_v8.dylib",
+             str(libdir / "libnapi_v8.dylib"),
              str(out_so)],
             check=False)
     return True
@@ -186,7 +186,7 @@ def main():
     args = ap.parse_args()
 
     libdir = lib_dir(args.platform, args.arch, args.config, args.engine)
-    lib_names = ("libNapiV8.dylib", "libnapi_v8.so", "napi_v8.dll",
+    lib_names = ("libnapi_v8.dylib", "libnapi_v8.so", "napi_v8.dll",
                  "libnapi_hermes.so", "libnapi_hermes.dylib", "libnapi_jsc.dylib")
     if not any((libdir / n).exists() for n in lib_names):
         sys.exit(f"napi library not found in {libdir} — run scripts/build.py first")

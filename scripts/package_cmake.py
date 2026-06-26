@@ -67,9 +67,9 @@ PLATFORM_LIB = {
     "v8": {
         "linux":   ("libnapi_v8.so",   None),
         "android": ("libnapi_v8.so",   None),
-        "mac":     ("libNapiV8.dylib", None),
-        "ios":     ("libNapiV8.dylib", None),
-        "ios_sim": ("libNapiV8.dylib", None),
+        "mac":     ("libnapi_v8.dylib", None),
+        "ios":     ("libnapi_v8.dylib", None),
+        "ios_sim": ("libnapi_v8.dylib", None),
         "windows": ("napi_v8.dll",     "napi_v8.lib"),
     },
     "hermes": {
