@@ -6,4 +6,10 @@ declare_args() {
   # Switching engine target. Currently only v8 is supported; other engines
   # use the CMake path.
   napi_engine = "v8"
+
+  # llvm source-based coverage on the napi targets only (the napi_v8 lib + the
+  # tests via the napi_flags config) — V8 core (v8_monolith) is a separate target
+  # and stays uninstrumented. Enable with `napi_coverage=true` in args.gn, then
+  # run the tests with LLVM_PROFILE_FILE and report via llvm-profdata + llvm-cov.
+  napi_coverage = false
 }

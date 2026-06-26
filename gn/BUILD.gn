@@ -1,6 +1,8 @@
 # Shared GN config for all napi-impl targets.
 # Imported into //napi/src/*/BUILD.gn via configs.
 
+import("//napi/gn/napi_flags.gni")
+
 config("napi_flags") {
   cflags_cc = [
     "-std=c++20",
@@ -19,4 +21,16 @@ config("napi_flags") {
     "//napi/include",
     "//include",  # V8 public headers (v8-context.h, libplatform/libplatform.h)
   ]
+
+  # Instrument only our targets (this config) — not V8 core.
+  if (napi_coverage) {
+    cflags = [
+      "-fprofile-instr-generate",
+      "-fcoverage-mapping",
+    ]
+    ldflags = [
+      "-fprofile-instr-generate",
+      "-fcoverage-mapping",
+    ]
+  }
 }
