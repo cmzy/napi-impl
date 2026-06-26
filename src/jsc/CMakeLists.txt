@@ -84,6 +84,12 @@ if(NAPI_JSC_BUILD_TESTS)
     add_executable(napi_core_gtest ${NAPI_IMPL_ROOT}/test/napi_core_gtest.cc)
     target_link_libraries(napi_core_gtest PRIVATE napi_flags napi_jsc GTest::gtest_main)
     add_test(NAME napi_core_gtest COMMAND napi_core_gtest)
+
+    # Object/property/lifecycle surface (properties, elements, promises, dates,
+    # instances, references, externals, finalizers, freeze/seal, error helpers).
+    add_executable(napi_object_gtest ${NAPI_IMPL_ROOT}/test/napi_object_gtest.cc)
+    target_link_libraries(napi_object_gtest PRIVATE napi_flags napi_jsc GTest::gtest_main)
+    add_test(NAME napi_object_gtest COMMAND napi_object_gtest)
   endif()
 
   # The upstream js-native-api host runner (test/runner.cc), built for JSC via
