@@ -72,6 +72,12 @@ if(NAPI_JSC_BUILD_TESTS)
     add_executable(node_api_extras_gtest ${NAPI_IMPL_ROOT}/test/node_api_extras_gtest.cc)
     target_link_libraries(node_api_extras_gtest PRIVATE napi_flags napi_jsc GTest::gtest_main)
     add_test(NAME node_api_extras_gtest COMMAND node_api_extras_gtest)
+
+    # Engine-neutral fast-call fallback (src/common/fast_call_fallback.cc): the
+    # slow-equivalent surface this (non-V8) backend exposes for napi/fast_call.h.
+    add_executable(fast_call_fallback_gtest ${NAPI_IMPL_ROOT}/test/fast_call_fallback_gtest.cc)
+    target_link_libraries(fast_call_fallback_gtest PRIVATE napi_flags napi_jsc GTest::gtest_main)
+    add_test(NAME fast_call_fallback_gtest COMMAND fast_call_fallback_gtest)
   endif()
 
   # The upstream js-native-api host runner (test/runner.cc), built for JSC via
