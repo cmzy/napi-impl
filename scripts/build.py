@@ -19,11 +19,9 @@ import subprocess
 import sys
 from pathlib import Path
 
-try:
-    import yaml  # type: ignore
-except ImportError:
-    sys.stderr.write("Missing PyYAML. Install with: pip3 install pyyaml\n")
-    sys.exit(1)
+# PyYAML is only needed for the V8 (GN) build, which parses config/v8_args.yml.
+# It is imported lazily in _load_yaml so the JSC/Hermes (CMake) builds — and CI
+# jobs that only install ninja — don't require it.
 
 ROOT = Path(__file__).resolve().parent.parent
 THIRD_PARTY = ROOT / "third_party"
@@ -37,6 +35,10 @@ DEPOT_TOOLS = THIRD_PARTY / "depot_tools"
 # ---------------------------------------------------------------------------
 
 def _load_yaml(path: Path) -> dict:
+    try:
+        import yaml  # type: ignore
+    except ImportError:
+        sys.exit("Missing PyYAML (needed for the V8 build). Install with: pip3 install pyyaml")
     if not path.exists():
         return {}
     return yaml.safe_load(path.read_text(encoding="utf-8")) or {}
