@@ -59,6 +59,7 @@ if(NAPI_JSC_BUILD_TESTS)
 
     # V8-compat extensions: SharedArrayBuffer (real zero-copy) + Inspector.
     add_executable(jsc_v8compat ${NAPI_IMPL_ROOT}/test/jsc_v8compat.cc)
+    target_include_directories(jsc_v8compat PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})  # internal env layout (SAB fallback)
     target_link_libraries(jsc_v8compat PRIVATE napi_flags napi_jsc GTest::gtest_main)
     add_test(NAME jsc_v8compat COMMAND jsc_v8compat)
 

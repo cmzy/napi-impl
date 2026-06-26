@@ -10,6 +10,8 @@
 
 #include <cstdlib>
 
+#include "js_native_api_jsc.h"  // white-box: env->shared_arraybuffer_ctor (fallback test)
+
 #include "napi_gtest_fixture.h"
 #include "napi_v8/inspector.h"
 
@@ -80,6 +82,28 @@ TEST_F(NapiExtras, Inspector) {
   ASSERT_EQ(napi_v8_inspector_set_pause_handler(env_, nullptr, nullptr), napi_ok);
   ASSERT_EQ(napi_v8_inspector_set_wake_handler(env_, nullptr, nullptr), napi_ok);
   ASSERT_EQ(napi_v8_inspector_stop(env_), napi_ok);
+}
+
+// White-box: force the no-real-SAB fallback (a tagged ArrayBuffer over our own
+// allocation) by temporarily clearing the cached SharedArrayBuffer constructor,
+// covering node_api_create_sharedarraybuffer's fallback branch.
+TEST_F(NapiExtras, SharedArrayBufferFallback) {
+  auto saved = env_->shared_arraybuffer_ctor;
+  env_->shared_arraybuffer_ctor = nullptr;
+  void* data = nullptr;
+  napi_value sab = nullptr;
+  napi_status st = node_api_create_sharedarraybuffer(env_, 16, &data, &sab);
+  env_->shared_arraybuffer_ctor = saved;  // restore before any assertion can early-return
+  ASSERT_EQ(st, napi_ok);
+  EXPECT_TRUE(data != nullptr) << "fallback SAB has a backing pointer";
+
+  bool is = false;
+  ASSERT_EQ(node_api_is_sharedarraybuffer(env_, sab, &is), napi_ok);
+  EXPECT_TRUE(is) << "tagged-AB fallback still reports is_shared_arraybuffer";
+  void* info_data = nullptr;
+  size_t info_len = 0;
+  ASSERT_EQ(napi_get_arraybuffer_info(env_, sab, &info_data, &info_len), napi_ok);
+  EXPECT_EQ(info_len, 16u);
 }
 
 }  // namespace

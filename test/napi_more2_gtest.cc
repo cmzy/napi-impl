@@ -130,6 +130,13 @@ TEST_F(NapiExtras, CreateArrayBufferWithData) {
   static_cast<unsigned char*>(data)[0] = 0x7E;
   SetGlobal("__ab", ab);
   EXPECT_EQ(I32(Run("new Uint8Array(__ab)[0]")), 0x7E);
+
+  // data out-pointer omitted (the other branch).
+  napi_value ab2 = nullptr;
+  ASSERT_EQ(napi_create_arraybuffer(env_, 8, nullptr, &ab2), napi_ok);
+  bool is = false;
+  ASSERT_EQ(napi_is_arraybuffer(env_, ab2, &is), napi_ok);
+  EXPECT_TRUE(is);
 }
 
 TEST_F(NapiExtras, CbInfoExtraArgs) {
