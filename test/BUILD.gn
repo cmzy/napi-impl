@@ -18,14 +18,18 @@ executable("runner") {
   deps = [ "//napi/src/v8:napi_v8" ]
 }
 
-executable("fast_call_smoke") {
+executable("fast_call_gtest") {
   testonly = true
   sources = [ "fast_call_smoke.cc" ]
   configs += [
     "//napi/gn:napi_flags",
     "//:external_config",
   ]
-  deps = [ "//napi/src/v8:napi_v8" ]
+  deps = [
+    "//napi/src/v8:napi_v8",
+    "//third_party/googletest:gtest",
+    "//third_party/googletest:gtest_main",
+  ]
 }
 
 executable("wrap_bench") {
@@ -40,5 +44,5 @@ executable("wrap_bench") {
 
 group("test") {
   testonly = true
-  deps = [ ":run", ":runner", ":fast_call_smoke", ":wrap_bench" ]
+  deps = [ ":run", ":runner", ":fast_call_gtest", ":wrap_bench" ]
 }
