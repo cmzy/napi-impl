@@ -138,6 +138,36 @@ napi_status NAPI_CDECL napi_create_object(napi_env env, napi_value* result) {
     return napi_jsc_clear_error(env);
 }
 
+napi_status NAPI_CDECL node_api_create_object_with_properties(napi_env env, napi_value prototype_or_null,
+                                                              napi_value* property_names, napi_value* property_values,
+                                                              size_t property_count, napi_value* result) {
+    NAPI_PREAMBLE(env);
+    CHECK_ARG(env, result);
+    if (property_count > 0) {
+        CHECK_ARG(env, property_names);
+        CHECK_ARG(env, property_values);
+    }
+
+    JSObjectRef obj = JSObjectMake(env->ctx, nullptr, nullptr);
+    // null prototype => null-proto object (like Object.create(null)); otherwise
+    // install the given prototype.
+    JSObjectSetPrototype(env->ctx, obj,
+                         prototype_or_null != nullptr ? ToJS(prototype_or_null) : JSValueMakeNull(env->ctx));
+
+    for (size_t i = 0; i < property_count; i++) {
+        JSValueRef key = ToJS(property_names[i]);
+        JSType kt = JSValueGetType(env->ctx, key);
+        RETURN_STATUS_IF_FALSE(env, kt == kJSTypeString || kt == kJSTypeSymbol, napi_name_expected);
+        JSValueRef exc = nullptr;
+        JSObjectSetPropertyForKey(env->ctx, obj, key, ToJS(property_values[i]), kJSPropertyAttributeNone, &exc);
+        if (exc != nullptr)
+            return napi_jsc_record_exception(env, exc);
+    }
+
+    *result = napi_jsc_add_handle(env, obj);
+    return napi_jsc_clear_error(env);
+}
+
 napi_status NAPI_CDECL napi_get_named_property(napi_env env, napi_value object, const char* utf8name,
                                                napi_value* result) {
     NAPI_PREAMBLE(env);
@@ -383,6 +413,18 @@ napi_status NAPI_CDECL napi_get_prototype(napi_env env, napi_value object, napi_
     JSObjectRef obj = AsObject(env, object);
     RETURN_STATUS_IF_FALSE(env, obj != nullptr, napi_object_expected);
     *result = napi_jsc_add_handle(env, JSObjectGetPrototype(env->ctx, obj));
+    return napi_jsc_clear_error(env);
+}
+
+napi_status NAPI_CDECL node_api_set_prototype(napi_env env, napi_value object, napi_value value) {
+    NAPI_PREAMBLE(env);
+    CHECK_ARG(env, object);
+    CHECK_ARG(env, value);
+    JSObjectRef obj = AsObject(env, object);
+    RETURN_STATUS_IF_FALSE(env, obj != nullptr, napi_object_expected);
+    // JSObjectSetPrototype has no error channel; it silently no-ops on a
+    // non-extensible object, which matches the "best effort" of the C API.
+    JSObjectSetPrototype(env->ctx, obj, ToJS(value));
     return napi_jsc_clear_error(env);
 }
 
@@ -999,8 +1041,10 @@ napi_status NAPI_CDECL napi_is_dataview(napi_env env, napi_value value, bool* re
 // napi_is_detached_arraybuffer, the ArrayBuffer/TypedArray/DataView family,
 // BigInt, and type tags are implemented in jsc_buffers.cc.
 
-// Not declared in the vendored node-api-headers (upstream Hermes provides it),
-// so declare it here to inherit NAPI_EXTERN's default visibility + C linkage.
+// node_api_post_finalizer is declared in napi/js_native_api.h under
+// NAPI_EXPERIMENTAL, but js_native_api_jsc.h pulls that header in before this
+// TU defines NAPI_EXPERIMENTAL, so the experimental decl is guarded out here.
+// Re-declare with explicit C linkage so the exported symbol stays unmangled.
 extern "C" NAPI_EXTERN napi_status NAPI_CDECL node_api_post_finalizer(node_api_basic_env, napi_finalize, void*,
                                                                       void*);
 

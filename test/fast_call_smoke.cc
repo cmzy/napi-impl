@@ -164,6 +164,26 @@ napi_value generic_slow(napi_env env, napi_callback_info info) {
     (void)info;
 }
 
+// --- fast accessor getter (napi_define_fast_accessor) ----------------------
+// Both paths return 777.0 so correctness is path-agnostic; the counters reveal
+// whether V8 inlined the C fast entry on the accessor access site.
+int64_t g_getx_fast = 0;
+int64_t g_getx_slow = 0;
+
+double getx_fast(napi_fast_recv recv) {
+    (void)recv;
+    g_getx_fast++;
+    return 777.0;
+}
+
+napi_value getx_slow(napi_env env, napi_callback_info info) {
+    (void)info;
+    g_getx_slow++;
+    napi_value r = nullptr;
+    napi_create_double(env, 777.0, &r);
+    return r;
+}
+
 // Wrap a fresh Calc instance carrying `ctx` with type tag `tag`, return it.
 napi_status make_handle(napi_env env, napi_value cls, Ctx* ctx, const void* tag, napi_value* out) {
     CHECK(napi_new_instance(env, cls, 0, nullptr, out));
@@ -421,6 +441,34 @@ int main() {
         CHECK(napi_get_value_double(env, e1, &b));
         EXPECT(a == 50.0, "overload ov(a) resolved to the 1-arg fast fn");
         EXPECT(b == 11.0, "overload ov(a,b) resolved to the 2-arg fast fn");
+    }
+
+    // --- fast accessor: a fast getter installed via napi_define_fast_accessor.
+    // V8 reaches the C fast entry of an accessor getter on optimized monomorphic
+    // access. Correctness is path-agnostic (both return 777); the counters show
+    // whether the fast entry was taken (accessor inlining is V8-version-sensitive,
+    // so we report it rather than require it).
+    {
+        napi_value getter = nullptr;
+        const napi_fast_signature getx_sig{napi_fast_float64, 1, recv_only, false};
+        CHECK(napi_create_fast_function(env, "getx", NAPI_AUTO_LENGTH, getx_slow, &getx_sig,
+                                        reinterpret_cast<const void*>(&getx_fast), nullptr, &getter));
+        CHECK(napi_define_fast_accessor(env, calc, "fastx", getter, nullptr, napi_default));
+        const char* js =
+                "function hotg(o){return o.fastx;}"
+                "%PrepareFunctionForOptimization(hotg);"
+                "hotg(calc); hotg(calc);"
+                "%OptimizeFunctionOnNextCall(hotg);"
+                "var s=0; for (var i=0;i<5;i++) s+=hotg(calc);"
+                "s;";
+        napi_value r = nullptr;
+        CHECK(run(env, js, &r));
+        double s = 0;
+        CHECK(napi_get_value_double(env, r, &s));
+        EXPECT(s == 777.0 * 5, "fast accessor getter returns the correct value");
+        EXPECT(g_getx_fast + g_getx_slow == 7, "accessor getter ran for every read (2 warmup + 5 loop)");
+        std::printf("  [info] fast accessor getter fast=%lld slow=%lld\n", (long long)g_getx_fast,
+                    (long long)g_getx_slow);
     }
 
     // --- HARDENING #1: type-tag blocks cross-class confusion on the fast path

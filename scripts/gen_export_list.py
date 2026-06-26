@@ -42,6 +42,7 @@ EMBEDDING_COMMON = [
     # consumer source links everywhere.
     "napi_create_fast_function",
     "napi_create_fast_function_overloads",
+    "napi_define_fast_accessor",
     "napi_fast_wrap",
     "napi_fast_unwrap",
     "napi_fast_value_unwrap",
@@ -62,9 +63,15 @@ EMBEDDING_V8_ONLY = [
     "napi_v8_inspector_wait",
     "napi_v8_inspector_set_pause_handler",
     "napi_v8_inspector_set_wake_handler",
-    "napi_v8_create_shared_arraybuffer",
-    "napi_v8_is_shared_arraybuffer",
-    "napi_v8_get_shared_arraybuffer_info",
+    # Experimental core node-api calls implemented on v8 + jsc only (hermes/
+    # quickjs do not provide them yet). SharedArrayBuffer info is read via the
+    # standard napi_get_arraybuffer_info (extended to accept a SAB), so there is
+    # no SAB-info symbol here.
+    "node_api_create_sharedarraybuffer",
+    "node_api_create_external_sharedarraybuffer",
+    "node_api_is_sharedarraybuffer",
+    "node_api_set_prototype",
+    "node_api_create_object_with_properties",
 ]
 
 # Back-compat alias (the V8 path used this single list).

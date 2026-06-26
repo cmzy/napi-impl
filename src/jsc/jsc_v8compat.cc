@@ -19,6 +19,9 @@
 // ArrayBuffer over our own allocation (real zero-copy C<->JS within the process,
 // tagged so is_shared_arraybuffer still reports it as shared).
 
+// node_api_create/is_sharedarraybuffer are experimental core node-api calls.
+#define NAPI_EXPERIMENTAL
+
 #include <cstddef>
 #include <cstdlib>
 
@@ -26,7 +29,6 @@
 
 #include "js_native_api_jsc.h"
 #include "napi_v8/inspector.h"
-#include "napi_v8/sab.h"
 
 namespace {
 JSObjectRef ToObj(napi_env env, napi_value v) {
@@ -110,10 +112,13 @@ napi_status NAPI_CDECL napi_v8_inspector_set_wake_handler(napi_env env, napi_v8_
 }
 
 // ===========================================================================
-// SharedArrayBuffer (napi_v8/sab.h)
+// SharedArrayBuffer (core node-api, experimental): node_api_create_/is_/
+// create_external_sharedarraybuffer. Reading a SAB's backing pointer/size goes
+// through napi_get_arraybuffer_info, which the JSC backend extends to accept a
+// SAB (see src/jsc/jsc_buffers.cc).
 // ===========================================================================
 
-napi_status NAPI_CDECL napi_v8_create_shared_arraybuffer(napi_env env, size_t byte_length, void** data,
+napi_status NAPI_CDECL node_api_create_sharedarraybuffer(napi_env env, size_t byte_length, void** data,
                                                          napi_value* result) {
     NAPI_PREAMBLE(env);
     CHECK_ARG(env, result);
@@ -140,7 +145,7 @@ napi_status NAPI_CDECL napi_v8_create_shared_arraybuffer(napi_env env, size_t by
             std::free(mem);
             return napi_jsc_record_exception(env, exc);
         }
-        // Tag it so napi_v8_is_shared_arraybuffer recognizes the fallback.
+        // Tag it so node_api_is_sharedarraybuffer recognizes the fallback.
         JSObjectSetPropertyForKey(ctx, buf, env->sab_tag, JSValueMakeBoolean(ctx, true),
                                   kJSPropertyAttributeDontEnum | kJSPropertyAttributeDontDelete, nullptr);
     }
@@ -153,7 +158,7 @@ napi_status NAPI_CDECL napi_v8_create_shared_arraybuffer(napi_env env, size_t by
     return napi_jsc_clear_error(env);
 }
 
-napi_status NAPI_CDECL napi_v8_is_shared_arraybuffer(napi_env env, napi_value value, bool* result) {
+napi_status NAPI_CDECL node_api_is_sharedarraybuffer(napi_env env, napi_value value, bool* result) {
     CHECK_ENV(env);
     CHECK_ARG(env, value);
     CHECK_ARG(env, result);
@@ -169,20 +174,35 @@ napi_status NAPI_CDECL napi_v8_is_shared_arraybuffer(napi_env env, napi_value va
     return napi_jsc_clear_error(env);
 }
 
-napi_status NAPI_CDECL napi_v8_get_shared_arraybuffer_info(napi_env env, napi_value sab, void** data,
-                                                           size_t* byte_length) {
+napi_status NAPI_CDECL node_api_create_external_sharedarraybuffer(napi_env env, void* external_data, size_t byte_length,
+                                                                  node_api_noenv_finalize finalize_cb,
+                                                                  void* finalize_hint, napi_value* result) {
     NAPI_PREAMBLE(env);
-    CHECK_ARG(env, sab);
-    bool is = false;
-    napi_v8_is_shared_arraybuffer(env, sab, &is);
-    RETURN_STATUS_IF_FALSE(env, is, napi_arraybuffer_expected);
-    JSObjectRef o = ToObj(env, sab);
+    CHECK_ARG(env, result);
+    JSContextRef ctx = env->ctx;
+    // JSC has no SAB-over-external-memory constructor; wrap the caller's memory
+    // as a no-copy ArrayBuffer and tag it as shared (same scheme as the create
+    // fallback). Real C<->JS zero-copy over the buffer; not cross-agent sharing.
+    struct FinalizerBox {
+        node_api_noenv_finalize cb;
+        void* hint;
+    };
+    FinalizerBox* box = (finalize_cb != nullptr) ? new FinalizerBox{finalize_cb, finalize_hint} : nullptr;
+    auto dealloc = +[](void* bytes, void* deallocator_ctx) {
+        if (auto* b = static_cast<FinalizerBox*>(deallocator_ctx)) {
+            b->cb(bytes, b->hint);
+            delete b;
+        }
+    };
+
     JSValueRef exc = nullptr;
-    if (data != nullptr)
-        *data = JSObjectGetArrayBufferBytesPtr(env->ctx, o, &exc);
-    if (byte_length != nullptr)
-        *byte_length = JSObjectGetArrayBufferByteLength(env->ctx, o, &exc);
-    if (exc != nullptr)
+    JSObjectRef buf = JSObjectMakeArrayBufferWithBytesNoCopy(ctx, external_data, byte_length, dealloc, box, &exc);
+    if (buf == nullptr || exc != nullptr) {
+        delete box;
         return napi_jsc_record_exception(env, exc);
+    }
+    JSObjectSetPropertyForKey(ctx, buf, env->sab_tag, JSValueMakeBoolean(ctx, true),
+                              kJSPropertyAttributeDontEnum | kJSPropertyAttributeDontDelete, nullptr);
+    *result = napi_jsc_add_handle(env, buf);
     return napi_jsc_clear_error(env);
 }

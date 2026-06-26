@@ -174,6 +174,49 @@ napi_status NAPI_CDECL napi_create_fast_function_overloads(napi_env env, const c
     return GET_RETURN_STATUS(env);
 }
 
+napi_status NAPI_CDECL napi_define_fast_accessor(napi_env env, napi_value object, napi_value name, napi_value getter,
+                                                 napi_value setter, napi_property_attributes attributes) {
+    NAPI_PREAMBLE(env);
+    CHECK_ARG(env, object);
+    CHECK_ARG(env, name);
+    RETURN_STATUS_IF_FALSE(env, getter != nullptr || setter != nullptr, napi_invalid_arg);
+
+    v8::Local<v8::Value> objv = v8impl::V8LocalValueFromJsValue(object);
+    RETURN_STATUS_IF_FALSE(env, objv->IsObject(), napi_object_expected);
+    v8::Local<v8::Object> obj = objv.As<v8::Object>();
+
+    v8::Local<v8::Value> namev = v8impl::V8LocalValueFromJsValue(name);
+    RETURN_STATUS_IF_FALSE(env, namev->IsName(), napi_name_expected);
+    v8::Local<v8::Name> key = namev.As<v8::Name>();
+
+    v8::Local<v8::Function> get_fn;  // empty => read-disabled
+    v8::Local<v8::Function> set_fn;  // empty => write-disabled
+    if (getter != nullptr) {
+        v8::Local<v8::Value> gv = v8impl::V8LocalValueFromJsValue(getter);
+        RETURN_STATUS_IF_FALSE(env, gv->IsFunction(), napi_function_expected);
+        get_fn = gv.As<v8::Function>();
+    }
+    if (setter != nullptr) {
+        v8::Local<v8::Value> sv = v8impl::V8LocalValueFromJsValue(setter);
+        RETURN_STATUS_IF_FALSE(env, sv->IsFunction(), napi_function_expected);
+        set_fn = sv.As<v8::Function>();
+    }
+
+    // Accessors carry no "writable" bit; only enumerable/configurable apply.
+    int attr = v8::None;
+    if ((attributes & napi_enumerable) == 0)
+        attr |= v8::DontEnum;
+    if ((attributes & napi_configurable) == 0)
+        attr |= v8::DontDelete;
+
+    // When get_fn/set_fn were built by napi_create_fast_function they carry a
+    // v8::CFunction; installing them as an accessor lets V8 reach the fast C
+    // entry on optimized, monomorphic property access (slow trampoline backs
+    // every other case).
+    obj->SetAccessorProperty(key, get_fn, set_fn, static_cast<v8::PropertyAttribute>(attr));
+    return GET_RETURN_STATUS(env);
+}
+
 napi_status NAPI_CDECL napi_fast_wrap(napi_env env, napi_value js_object, void* native, const void* type_tag,
                                       napi_finalize finalize_cb, void* finalize_hint, napi_ref* result) {
     CHECK_ENV(env);

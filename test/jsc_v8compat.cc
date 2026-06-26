@@ -3,12 +3,15 @@
 // the CDP message-loop calls are no-ops on JSC). Public API only.
 
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 
+// SharedArrayBuffer is experimental core node-api now (node_api_*); reading its
+// backing store goes through napi_get_arraybuffer_info (extended to accept SAB).
+#define NAPI_EXPERIMENTAL
 #include "napi/js_native_api.h"
 #include "napi_v8/embedding.h"
 #include "napi_v8/inspector.h"
-#include "napi_v8/sab.h"
 
 #define CHECK(expr)                                                                                                    \
     do {                                                                                                              \
@@ -32,18 +35,19 @@ static void on_error(const char* msg) { std::fprintf(stderr, "[engine error] %s\
 static int sab_checks(napi_env env) {
     void* data = nullptr;
     napi_value sab = nullptr;
-    CHECK(napi_v8_create_shared_arraybuffer(env, 32, &data, &sab));
+    CHECK(node_api_create_sharedarraybuffer(env, 32, &data, &sab));
     EXPECT(data != nullptr, "SAB: backing pointer must be non-null");
 
     bool is = false;
-    CHECK(napi_v8_is_shared_arraybuffer(env, sab, &is));
+    CHECK(node_api_is_sharedarraybuffer(env, sab, &is));
     EXPECT(is, "SAB: created buffer should report is_shared_arraybuffer == true");
 
+    // napi_get_arraybuffer_info is extended to read a SAB's backing store.
     void* info_data = nullptr;
     size_t info_len = 0;
-    CHECK(napi_v8_get_shared_arraybuffer_info(env, sab, &info_data, &info_len));
-    EXPECT(info_data == data, "SAB: get_info pointer must match create pointer");
-    EXPECT(info_len == 32, "SAB: get_info length must be 32");
+    CHECK(napi_get_arraybuffer_info(env, sab, &info_data, &info_len));
+    EXPECT(info_data == data, "SAB: get_arraybuffer_info pointer must match create pointer");
+    EXPECT(info_len == 32, "SAB: get_arraybuffer_info length must be 32");
 
     // Zero-copy: write through the C pointer, read back from JS.
     static_cast<unsigned char*>(data)[5] = 0xAB;
@@ -61,8 +65,26 @@ static int sab_checks(napi_env env) {
     // A plain object is not a shared arraybuffer.
     napi_value obj = nullptr;
     CHECK(napi_create_object(env, &obj));
-    CHECK(napi_v8_is_shared_arraybuffer(env, obj, &is));
+    CHECK(node_api_is_sharedarraybuffer(env, obj, &is));
     EXPECT(!is, "SAB: a plain object must not report is_shared_arraybuffer");
+
+    // External SAB: wrap caller-owned memory zero-copy.
+    auto* ext = static_cast<unsigned char*>(std::calloc(1, 16));
+    EXPECT(ext != nullptr, "SAB: external alloc failed");
+    ext[3] = 0x5C;
+    napi_value esab = nullptr;
+    CHECK(node_api_create_external_sharedarraybuffer(env, ext, 16, nullptr, nullptr, &esab));
+    bool eis = false;
+    CHECK(node_api_is_sharedarraybuffer(env, esab, &eis));
+    EXPECT(eis, "SAB(external): must report is_shared_arraybuffer == true");
+    void* edata = nullptr;
+    size_t elen = 0;
+    CHECK(napi_get_arraybuffer_info(env, esab, &edata, &elen));
+    EXPECT(edata == ext, "SAB(external): info pointer must equal the wrapped buffer");
+    EXPECT(elen == 16, "SAB(external): info length must be 16");
+    // We passed no finalizer, so we own `ext`; free it after the env tears down.
+    // (Skipping free here is fine for a short-lived test process.)
+    std::free(ext);
     return 0;
 }
 

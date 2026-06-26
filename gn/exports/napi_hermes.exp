@@ -40,6 +40,7 @@ _napi_create_type_error
 _napi_create_typedarray
 _napi_create_uint32
 _napi_define_class
+_napi_define_fast_accessor
 _napi_define_properties
 _napi_delete_element
 _napi_delete_property

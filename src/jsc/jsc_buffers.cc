@@ -151,11 +151,19 @@ napi_status NAPI_CDECL napi_create_external_arraybuffer(napi_env env, void* exte
     return napi_jsc_clear_error(env);
 }
 
+// Defined in jsc_v8compat.cc (experimental core node-api). Declared locally
+// because this TU does not define NAPI_EXPERIMENTAL.
+extern "C" NAPI_EXTERN napi_status NAPI_CDECL node_api_is_sharedarraybuffer(napi_env, napi_value, bool*);
+
 napi_status NAPI_CDECL napi_get_arraybuffer_info(napi_env env, napi_value arraybuffer, void** data,
                                                  size_t* byte_length) {
     NAPI_PREAMBLE(env);
     CHECK_ARG(env, arraybuffer);
-    RETURN_STATUS_IF_FALSE(env, IsArrayBufferVal(env, arraybuffer), napi_arraybuffer_expected);
+    // Non-standard, lenient extension (matches the V8 backend): also accept a
+    // SharedArrayBuffer here, since node-api has no other SAB info reader.
+    bool is_sab = false;
+    node_api_is_sharedarraybuffer(env, arraybuffer, &is_sab);
+    RETURN_STATUS_IF_FALSE(env, IsArrayBufferVal(env, arraybuffer) || is_sab, napi_arraybuffer_expected);
     JSObjectRef o = ToObj(env, arraybuffer);
     JSValueRef exc = nullptr;
     if (data != nullptr)

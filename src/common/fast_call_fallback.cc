@@ -37,6 +37,41 @@ napi_status NAPI_CDECL napi_create_fast_function_overloads(napi_env env, const c
     return napi_create_function(env, utf8name, length, slow_cb, data, result);
 }
 
+napi_status NAPI_CDECL napi_define_fast_accessor(napi_env env, napi_value object, napi_value name, napi_value getter,
+                                                 napi_value setter, napi_property_attributes attributes) {
+    // No fast path on these engines: install an ordinary (slow) accessor via
+    // Object.defineProperty(object, name, { get, set, enumerable, configurable }).
+    if (getter == nullptr && setter == nullptr)
+        return napi_invalid_arg;
+
+    napi_value global, object_ctor, define_property, descriptor, flag;
+    napi_status st;
+    if ((st = napi_get_global(env, &global)) != napi_ok)
+        return st;
+    if ((st = napi_get_named_property(env, global, "Object", &object_ctor)) != napi_ok)
+        return st;
+    if ((st = napi_get_named_property(env, object_ctor, "defineProperty", &define_property)) != napi_ok)
+        return st;
+    if ((st = napi_create_object(env, &descriptor)) != napi_ok)
+        return st;
+    if (getter != nullptr && (st = napi_set_named_property(env, descriptor, "get", getter)) != napi_ok)
+        return st;
+    if (setter != nullptr && (st = napi_set_named_property(env, descriptor, "set", setter)) != napi_ok)
+        return st;
+    if ((st = napi_get_boolean(env, (attributes & napi_enumerable) != 0, &flag)) != napi_ok)
+        return st;
+    if ((st = napi_set_named_property(env, descriptor, "enumerable", flag)) != napi_ok)
+        return st;
+    if ((st = napi_get_boolean(env, (attributes & napi_configurable) != 0, &flag)) != napi_ok)
+        return st;
+    if ((st = napi_set_named_property(env, descriptor, "configurable", flag)) != napi_ok)
+        return st;
+
+    napi_value args[3] = {object, name, descriptor};
+    napi_value ret;
+    return napi_call_function(env, object_ctor, define_property, 3, args, &ret);
+}
+
 napi_status NAPI_CDECL napi_fast_wrap(napi_env env, napi_value js_object, void* native, const void* type_tag,
                                       napi_finalize finalize_cb, void* finalize_hint, napi_ref* result) {
     (void)type_tag;

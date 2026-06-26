@@ -120,6 +120,30 @@ NAPI_EXTERN napi_status NAPI_CDECL napi_create_fast_function_overloads(napi_env 
                                                                       void* data,
                                                                       napi_value* result);
 
+// Install a getter/setter accessor on `object` using fast functions as the
+// getter and setter. This is the only "callable kind" beyond plain calls that
+// V8 can fast-path: V8 reaches the C entry of a getter/setter created via
+// napi_create_fast_function when the access site is optimized + monomorphic
+// (the slow napi trampoline still backs every other case). To get the fast
+// accessor path, pass `getter`/`setter` produced by napi_create_fast_function
+// (with a non-NULL signature). Either may be NULL (a read-only or write-only
+// accessor); at least one is required.
+//
+// `name` must be a string or symbol. `attributes` follows napi semantics:
+// napi_enumerable / napi_configurable control the property's flags (napi_default
+// => non-enumerable, non-configurable, matching Object.defineProperty); the
+// writable bit does not apply to accessors and is ignored.
+//
+// To put a fast accessor on every instance of a class, call this on the class
+// prototype object. On non-V8 backends this installs an ordinary (slow)
+// accessor via Object.defineProperty, so the same source links everywhere.
+NAPI_EXTERN napi_status NAPI_CDECL napi_define_fast_accessor(napi_env env,
+                                                            napi_value object,
+                                                            napi_value name,
+                                                            napi_value getter,
+                                                            napi_value setter,
+                                                            napi_property_attributes attributes);
+
 // --- Wrap / unwrap (fast-safe native pointer storage) -----------------------
 
 // Like napi_wrap, but ALSO stores `native` in fast-readable slots (V8 internal

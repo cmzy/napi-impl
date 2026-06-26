@@ -51,6 +51,17 @@ NAPI_EXTERN napi_status NAPI_CDECL napi_get_boolean(napi_env env,
 NAPI_EXTERN napi_status NAPI_CDECL napi_create_object(napi_env env,
                                                       napi_value* result);
 
+#ifdef NAPI_EXPERIMENTAL
+#define NODE_API_EXPERIMENTAL_HAS_CREATE_OBJECT_WITH_PROPERTIES
+NAPI_EXTERN napi_status NAPI_CDECL
+node_api_create_object_with_properties(napi_env env,
+                                       napi_value prototype_or_null,
+                                       napi_value* property_names,
+                                       napi_value* property_values,
+                                       size_t property_count,
+                                       napi_value* result);
+#endif  // NAPI_EXPERIMENTAL
+
 NAPI_EXTERN napi_status NAPI_CDECL napi_create_array(napi_env env,
                                                      napi_value* result);
 NAPI_EXTERN napi_status NAPI_CDECL
@@ -187,6 +198,12 @@ NAPI_EXTERN napi_status NAPI_CDECL napi_coerce_to_string(napi_env env,
                                                          napi_value* result);
 
 // Methods to work with Objects
+#ifdef NAPI_EXPERIMENTAL
+#define NODE_API_EXPERIMENTAL_HAS_SET_PROTOTYPE
+NAPI_EXTERN napi_status NAPI_CDECL node_api_set_prototype(napi_env env,
+                                                          napi_value object,
+                                                          napi_value value);
+#endif
 NAPI_EXTERN napi_status NAPI_CDECL napi_get_prototype(napi_env env,
                                                       napi_value object,
                                                       napi_value* result);
@@ -421,6 +438,16 @@ napi_create_external_arraybuffer(napi_env env,
                                  node_api_basic_finalize finalize_cb,
                                  void* finalize_hint,
                                  napi_value* result);
+#ifdef NAPI_EXPERIMENTAL
+#define NODE_API_EXPERIMENTAL_HAS_CREATE_EXTERNAL_SHAREDARRAYBUFFER
+NAPI_EXTERN napi_status NAPI_CDECL
+node_api_create_external_sharedarraybuffer(napi_env env,
+                                           void* external_data,
+                                           size_t byte_length,
+                                           node_api_noenv_finalize finalize_cb,
+                                           void* finalize_hint,
+                                           napi_value* result);
+#endif  // NAPI_EXPERIMENTAL
 #endif  // NODE_API_NO_EXTERNAL_BUFFERS_ALLOWED
 NAPI_EXTERN napi_status NAPI_CDECL napi_get_arraybuffer_info(
     napi_env env, napi_value arraybuffer, void** data, size_t* byte_length);
@@ -458,6 +485,14 @@ napi_get_dataview_info(napi_env env,
                        void** data,
                        napi_value* arraybuffer,
                        size_t* byte_offset);
+
+#ifdef NAPI_EXPERIMENTAL
+#define NODE_API_EXPERIMENTAL_HAS_SHAREDARRAYBUFFER
+NAPI_EXTERN napi_status NAPI_CDECL
+node_api_is_sharedarraybuffer(napi_env env, napi_value value, bool* result);
+NAPI_EXTERN napi_status NAPI_CDECL node_api_create_sharedarraybuffer(
+    napi_env env, size_t byte_length, void** data, napi_value* result);
+#endif  // NAPI_EXPERIMENTAL
 
 
 // version management
@@ -512,6 +547,17 @@ napi_add_finalizer(napi_env env,
                    napi_ref* result);
 
 #endif  // NAPI_VERSION >= 5
+
+#ifdef NAPI_EXPERIMENTAL
+#define NODE_API_EXPERIMENTAL_HAS_POST_FINALIZER
+
+NAPI_EXTERN napi_status NAPI_CDECL
+node_api_post_finalizer(node_api_basic_env env,
+                        napi_finalize finalize_cb,
+                        void* finalize_data,
+                        void* finalize_hint);
+
+#endif  // NAPI_EXPERIMENTAL
 
 
 #if NAPI_VERSION >= 6

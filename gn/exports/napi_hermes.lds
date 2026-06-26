@@ -42,6 +42,7 @@
     napi_create_typedarray;
     napi_create_uint32;
     napi_define_class;
+    napi_define_fast_accessor;
     napi_define_properties;
     napi_delete_element;
     napi_delete_property;

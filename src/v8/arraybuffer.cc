@@ -112,16 +112,29 @@ napi_status NAPI_CDECL napi_get_arraybuffer_info(napi_env env, napi_value arrayb
     CHECK_ARG(env, arraybuffer);
 
     v8::Local<v8::Value> value = v8impl::V8LocalValueFromJsValue(arraybuffer);
-    RETURN_STATUS_IF_FALSE(env, value->IsArrayBuffer(), napi_invalid_arg);
 
-    v8::Local<v8::ArrayBuffer> ab = value.As<v8::ArrayBuffer>();
-
-    if (data != nullptr) {
-        *data = ab->Data();
-    }
-
-    if (byte_length != nullptr) {
-        *byte_length = ab->ByteLength();
+    // Non-standard, lenient extension: upstream Node returns napi_invalid_arg for
+    // a SharedArrayBuffer here, but node-api has no other SAB info reader and a
+    // SAB is a sibling of ArrayBuffer in V8 (same Data()/ByteLength()). We accept
+    // both. (napi_is_arraybuffer still reports false for a SAB, as upstream does.)
+    if (value->IsArrayBuffer()) {
+        v8::Local<v8::ArrayBuffer> ab = value.As<v8::ArrayBuffer>();
+        if (data != nullptr) {
+            *data = ab->Data();
+        }
+        if (byte_length != nullptr) {
+            *byte_length = ab->ByteLength();
+        }
+    } else if (value->IsSharedArrayBuffer()) {
+        v8::Local<v8::SharedArrayBuffer> sab = value.As<v8::SharedArrayBuffer>();
+        if (data != nullptr) {
+            *data = sab->Data();
+        }
+        if (byte_length != nullptr) {
+            *byte_length = sab->ByteLength();
+        }
+    } else {
+        return napi_set_last_error(env, napi_invalid_arg);
     }
 
     return napi_clear_last_error(env);

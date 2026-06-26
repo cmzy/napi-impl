@@ -41,6 +41,7 @@ EXPORTS
   napi_create_typedarray
   napi_create_uint32
   napi_define_class
+  napi_define_fast_accessor
   napi_define_properties
   napi_delete_element
   napi_delete_property
@@ -127,8 +128,6 @@ EXPORTS
   napi_type_tag_object
   napi_typeof
   napi_unwrap
-  napi_v8_create_shared_arraybuffer
-  napi_v8_get_shared_arraybuffer_info
   napi_v8_inspector_is_paused
   napi_v8_inspector_pump_messages
   napi_v8_inspector_set_pause_handler
@@ -137,15 +136,19 @@ EXPORTS
   napi_v8_inspector_stop
   napi_v8_inspector_wait
   napi_v8_inspector_wait_for_connection
-  napi_v8_is_shared_arraybuffer
   napi_v8_run_event_loop_tasks
   napi_wrap
+  node_api_create_external_sharedarraybuffer
   node_api_create_external_string_latin1
   node_api_create_external_string_utf16
+  node_api_create_object_with_properties
   node_api_create_property_key_latin1
   node_api_create_property_key_utf16
   node_api_create_property_key_utf8
+  node_api_create_sharedarraybuffer
   node_api_create_syntax_error
+  node_api_is_sharedarraybuffer
   node_api_post_finalizer
+  node_api_set_prototype
   node_api_symbol_for
   node_api_throw_syntax_error

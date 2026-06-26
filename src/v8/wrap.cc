@@ -202,12 +202,7 @@ napi_status NAPI_CDECL napi_add_finalizer(napi_env env, napi_value js_object, vo
 }
 
 
-// node_api_post_finalizer is exposed in node_api.h only for newer NAPI
-// versions; force C linkage so consumers see the unmangled symbol.
-extern "C" NAPI_EXTERN napi_status NAPI_CDECL node_api_post_finalizer(node_api_basic_env basic_env,
-                                                                      napi_finalize finalize_cb, void *finalize_data,
-                                                                      void *finalize_hint);
-
+// Declared in napi/js_native_api.h under NAPI_EXPERIMENTAL (defined above).
 napi_status NAPI_CDECL node_api_post_finalizer(node_api_basic_env basic_env, napi_finalize finalize_cb,
                                                void *finalize_data, void *finalize_hint) {
     napi_env env = const_cast<napi_env>(basic_env);
