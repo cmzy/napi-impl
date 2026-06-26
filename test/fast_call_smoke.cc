@@ -192,6 +192,19 @@ double u64_fast(napi_fast_recv recv, uint64_t a) {
     return static_cast<double>(a + 1);
 }
 
+// Returns the detected buffer-source element kind (napi_fast_bs_type) — driving
+// the bs-type switch in napi_fast_get_buffersource over every TypedArray kind.
+double bstype_fast(napi_fast_recv recv, napi_fast_value v) {
+    (void)recv;
+    uint8_t scratch[64];
+    void* data = nullptr;
+    size_t len = 0;
+    napi_fast_bs_type elem = napi_fast_bs_unknown;
+    if (!napi_fast_get_buffersource(v, scratch, sizeof scratch, &data, &len, &elem))
+        return -1;
+    return static_cast<double>(elem);
+}
+
 // --- fast accessor getter (napi_define_fast_accessor) ----------------------
 // Both paths return 777.0 so correctness is path-agnostic; the counters reveal
 // whether V8 inlined the C fast entry on the accessor access site.
@@ -752,6 +765,36 @@ TEST_F(FastCall, ScalarArgTypes) {
     EXPECT_TRUE(bv) << "bool fast arg+return (!false)";
     EXPECT_EQ(i64v, 101.0) << "int64 fast arg";
     EXPECT_EQ(u64v, 201.0) << "uint64 fast arg";
+}
+
+// --- buffer-source element kinds: one fast fn, called with every TypedArray
+// kind + a plain ArrayBuffer, drives the bs-type switch in get_buffersource.
+TEST_F(FastCall, BufferSourceElementKinds) {
+    const napi_fast_type one_obj[] = {napi_fast_receiver, napi_fast_jsvalue};
+    const napi_fast_signature sig{napi_fast_float64, 2, one_obj, false};
+    napi_value g = nullptr;
+    ASSERT_EQ(napi_get_global(env_, &g), napi_ok);
+    ASSERT_EQ(define_method(env_, g, "bstype", generic_slow, &sig, reinterpret_cast<const void*>(&bstype_fast)),
+              napi_ok);
+    const char* js =
+            "function hb(x){return bstype(x);}"
+            "%PrepareFunctionForOptimization(hb);"
+            "hb(new Int8Array(4)); hb(new Int8Array(4));"
+            "%OptimizeFunctionOnNextCall(hb);"
+            "[hb(new Int8Array(4)), hb(new Uint8Array(4)), hb(new Uint8ClampedArray(4)),"
+            " hb(new Int16Array(2)), hb(new Uint16Array(2)), hb(new Int32Array(1)),"
+            " hb(new Uint32Array(1)), hb(new Float32Array(1)), hb(new Float64Array(1)),"
+            " hb(new BigInt64Array(1)), hb(new BigUint64Array(1)), hb(new ArrayBuffer(4))];";
+    napi_value r = nullptr;
+    ASSERT_EQ(run(env_, js, &r), napi_ok);
+    // i8,u8,u8c,i16,u16,i32,u32,f32,f64,i64,u64,arraybuffer = 1..12
+    for (uint32_t i = 0; i < 12; ++i) {
+        napi_value e = nullptr;
+        ASSERT_EQ(napi_get_element(env_, r, i, &e), napi_ok);
+        double got = 0;
+        ASSERT_EQ(napi_get_value_double(env_, e, &got), napi_ok);
+        EXPECT_EQ(got, static_cast<double>(i + 1)) << "bs-type for element index " << i;
+    }
 }
 
 // --- Leak amplifier: create+drop a batch of fast functions, force GC, drain

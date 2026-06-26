@@ -101,6 +101,11 @@ if(NAPI_JSC_BUILD_TESTS)
     add_executable(napi_more_gtest ${NAPI_IMPL_ROOT}/test/napi_more_gtest.cc)
     target_link_libraries(napi_more_gtest PRIVATE napi_flags napi_jsc GTest::gtest_main)
     add_test(NAME napi_more_gtest COMMAND napi_more_gtest)
+
+    # Deeper core: new_target, property keys, attrs, exception forwarding, etc.
+    add_executable(napi_more2_gtest ${NAPI_IMPL_ROOT}/test/napi_more2_gtest.cc)
+    target_link_libraries(napi_more2_gtest PRIVATE napi_flags napi_jsc GTest::gtest_main)
+    add_test(NAME napi_more2_gtest COMMAND napi_more2_gtest)
   endif()
 
   # The upstream js-native-api host runner (test/runner.cc), built for JSC via
