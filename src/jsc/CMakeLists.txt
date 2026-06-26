@@ -96,7 +96,8 @@ if(NAPI_JSC_BUILD_TESTS)
       target_compile_definitions(js_native_api_suite_gtest PRIVATE
         "NAPI_RUNNER_PATH=\"$<TARGET_FILE:runner>\""
         "NAPI_TESTS_DIR=\"${NAPI_IMPL_ROOT}/test/js-native-api\""
-        "NAPI_SO_SUBDIR=\"Release\"")
+        "NAPI_SO_SUBDIR=\"Release\""
+        "NAPI_SUITE_ENGINE=\"jsc\"")
       add_dependencies(js_native_api_suite_gtest runner)
       add_test(NAME js_native_api_suite COMMAND js_native_api_suite_gtest)
     endif()

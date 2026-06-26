@@ -71,5 +71,21 @@ if(NAPI_HERMES_BUILD_TESTS)
     add_executable(runner ${NAPI_IMPL_ROOT}/test/runner.cc)
     target_compile_definitions(runner PRIVATE NAPI_RUNNER_HERMES)
     target_link_libraries(runner PRIVATE napi_flags napi_hermes ${CMAKE_DL_LIBS})
+
+    # gtest harness over the upstream js-native-api suite: one case per
+    # (module, test.js), each spawning `runner`. Engine-neutral source shared
+    # with the V8 (GN) + JSC tracks. Build addons first (build_tests.py --engine
+    # hermes); unbuilt modules report as SKIP.
+    if(NAPI_GTEST)
+      add_executable(js_native_api_suite_gtest ${NAPI_IMPL_ROOT}/test/js_native_api_suite_gtest.cc)
+      target_link_libraries(js_native_api_suite_gtest PRIVATE GTest::gtest)
+      target_compile_definitions(js_native_api_suite_gtest PRIVATE
+        "NAPI_RUNNER_PATH=\"$<TARGET_FILE:runner>\""
+        "NAPI_TESTS_DIR=\"${NAPI_IMPL_ROOT}/test/js-native-api\""
+        "NAPI_SO_SUBDIR=\"Release\""
+        "NAPI_SUITE_ENGINE=\"hermes\"")
+      add_dependencies(js_native_api_suite_gtest runner)
+      add_test(NAME js_native_api_suite COMMAND js_native_api_suite_gtest)
+    endif()
   endif()
 endif()

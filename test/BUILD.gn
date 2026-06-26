@@ -42,7 +42,37 @@ executable("wrap_bench") {
   deps = [ "//napi/src/v8:napi_v8" ]
 }
 
+# gtest harness over the upstream js-native-api conformance suite (engine-neutral:
+# it spawns the `runner` binary per (module, test.js)). Run from the build dir so
+# the build-dir-relative NAPI_TESTS_DIR resolves; addons must be built first
+# (scripts/build_tests.py --engine v8), or each case reports SKIP. Custom main(),
+# so depend on :gtest only (not :gtest_main).
+executable("js_native_api_suite_gtest") {
+  testonly = true
+  sources = [ "js_native_api_suite_gtest.cc" ]
+  configs += [
+    "//napi/gn:napi_flags",
+    "//:external_config",
+  ]
+  deps = [ "//third_party/googletest:gtest" ]
+  data_deps = [ ":runner" ]
+  defines = [
+    "NAPI_RUNNER_PATH=\"" + rebase_path("$root_out_dir/runner", root_build_dir) +
+        "\"",
+    "NAPI_TESTS_DIR=\"" +
+        rebase_path("//napi/test/js-native-api", root_build_dir) + "\"",
+    "NAPI_SO_SUBDIR=\"Release\"",
+    "NAPI_SUITE_ENGINE=\"v8\"",
+  ]
+}
+
 group("test") {
   testonly = true
-  deps = [ ":run", ":runner", ":fast_call_gtest", ":wrap_bench" ]
+  deps = [
+    ":fast_call_gtest",
+    ":js_native_api_suite_gtest",
+    ":run",
+    ":runner",
+    ":wrap_bench",
+  ]
 }
