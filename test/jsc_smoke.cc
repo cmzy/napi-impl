@@ -5,7 +5,7 @@
 // Uses only the public embedding API + standard napi_* surface (via the shared
 // NapiExtras fixture, which owns platform/runtime/env + a root handle scope).
 
-#include "jsc_gtest_fixture.h"
+#include "napi_gtest_fixture.h"
 
 namespace {
 

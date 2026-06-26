@@ -1,48 +1,22 @@
-// Minimal end-to-end smoke test for the Hermes NAPI backend, mirroring the V8
-// path's M1 check: napi_create_platform -> runtime -> env -> run "1+2" -> == 3.
-// Uses only the public embedding API + standard napi_* surface.
+// gtest conversion of the Hermes NAPI backend smoke test (M7.1, formerly a
+// bespoke main()+CHECK harness): the embedding env works end-to-end and
+// napi_run_script evaluates correctly. Driven through the shared NapiExtras
+// fixture (public embedding + standard napi surface only).
 
-#include <cstdio>
-#include <cstring>
+#include "napi_gtest_fixture.h"
 
-#include "napi/js_native_api.h"
-#include "napi_v8/embedding.h"
+namespace {
 
-#define CHECK(expr)                                                                                                    \
-    do {                                                                                                              \
-        napi_status _s = (expr);                                                                                      \
-        if (_s != napi_ok) {                                                                                          \
-            std::fprintf(stderr, "FAIL: %s -> status %d\n", #expr, (int)_s);                                         \
-            return 1;                                                                                                 \
-        }                                                                                                             \
-    } while (0)
-
-static void on_error(const char *msg) { std::fprintf(stderr, "[engine error] %s\n", msg ? msg : "(null)"); }
-
-int main() {
-    napi_platform platform = nullptr;
-    napi_runtime runtime = nullptr;
-    napi_env env = nullptr;
-
-    CHECK(napi_create_platform(0, nullptr, 0, nullptr, on_error, false, &platform));
-    CHECK(napi_create_runtime(platform, &runtime));
-    CHECK(napi_create_env(runtime, &env));
-
-    napi_value source = nullptr, result = nullptr;
-    const char *code = "1 + 2";
-    CHECK(napi_create_string_utf8(env, code, NAPI_AUTO_LENGTH, &source));
-    CHECK(napi_run_script(env, source, &result));
-
-    int32_t value = 0;
-    CHECK(napi_get_value_int32(env, result, &value));
-
-    std::printf("1 + 2 = %d\n", value);
-    int rc = (value == 3) ? 0 : 2;
-
-    CHECK(napi_destroy_env(env));
-    CHECK(napi_destroy_runtime(runtime));
-    CHECK(napi_destroy_platform(platform));
-
-    std::puts(rc == 0 ? "SMOKE PASS" : "SMOKE FAIL");
-    return rc;
+TEST_F(NapiExtras, RunScriptArithmetic) {
+  EXPECT_EQ(I32(Run("1 + 2")), 3);
 }
+
+TEST_F(NapiExtras, RunScriptStringConcat) {
+  napi_value res = Run("'hello ' + 'world'");
+  char buf[32] = {0};
+  size_t len = 0;
+  ASSERT_EQ(napi_get_value_string_utf8(env_, res, buf, sizeof(buf), &len), napi_ok);
+  EXPECT_STREQ(buf, "hello world");
+}
+
+}  // namespace

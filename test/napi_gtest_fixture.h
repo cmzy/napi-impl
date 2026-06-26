@@ -1,15 +1,16 @@
-// Shared googletest fixture for the JSC standalone-test conversions.
+// Shared googletest fixture for the standalone-test conversions (engine-neutral).
 //
 // Mirrors the NapiExtras fixture originally written inline in
 // node_api_extras_gtest.cc: it drives the active backend through the public
 // embedding API (napi_create_platform -> runtime -> env, plus a root handle
 // scope) in SetUp/TearDown, and exposes a handful of small JS-eval helpers
-// (Run/Global/Str/I32/Truthy/...). Each converted JSC test (.cc) is built as a
-// standalone executable that includes this header, so there is no cross-TU ODR
-// concern with the anonymous namespace below.
+// (Run/Global/Str/I32/Truthy/...). Uses only the embedding + standard napi
+// surface, so it works on every backend (JSC, Hermes, ...). Each converted test
+// (.cc) is built as a standalone executable that includes this header, so there
+// is no cross-TU ODR concern with the anonymous namespace below.
 
-#ifndef NAPI_TEST_JSC_GTEST_FIXTURE_H_
-#define NAPI_TEST_JSC_GTEST_FIXTURE_H_
+#ifndef NAPI_TEST_NAPI_GTEST_FIXTURE_H_
+#define NAPI_TEST_NAPI_GTEST_FIXTURE_H_
 
 #include <gtest/gtest.h>
 
@@ -79,4 +80,4 @@ class NapiExtras : public ::testing::Test {
 
 }  // namespace
 
-#endif  // NAPI_TEST_JSC_GTEST_FIXTURE_H_
+#endif  // NAPI_TEST_NAPI_GTEST_FIXTURE_H_

@@ -51,9 +51,15 @@ endif()
 option(NAPI_HERMES_BUILD_TESTS "Build the Hermes backend smoke test" ON)
 if(NAPI_HERMES_BUILD_TESTS)
   enable_testing()
-  add_executable(hermes_smoke ${NAPI_IMPL_ROOT}/test/hermes_smoke.cc)
-  target_link_libraries(hermes_smoke PRIVATE napi_flags napi_hermes)
-  add_test(NAME hermes_smoke COMMAND hermes_smoke)
+
+  # gtest smoke test (converted from the former main()+CHECK harness). Gated on
+  # -DNAPI_GTEST=ON (googletest fetched at the top level); a plain configure
+  # without NAPI_GTEST still succeeds, skipping it.
+  if(NAPI_GTEST)
+    add_executable(hermes_smoke ${NAPI_IMPL_ROOT}/test/hermes_smoke.cc)
+    target_link_libraries(hermes_smoke PRIVATE napi_flags napi_hermes GTest::gtest_main)
+    add_test(NAME hermes_smoke COMMAND hermes_smoke)
+  endif()
 
   # The js-native-api host runner — same source as the V8 path (test/runner.cc),
   # built engine-agnostic via NAPI_RUNNER_HERMES (skips V8 inspector + internal

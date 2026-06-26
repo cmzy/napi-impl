@@ -10,7 +10,7 @@
 
 #include <cstdlib>
 
-#include "jsc_gtest_fixture.h"
+#include "napi_gtest_fixture.h"
 #include "napi_v8/inspector.h"
 
 namespace {

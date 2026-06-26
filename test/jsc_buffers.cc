@@ -5,7 +5,7 @@
 
 #include <cstdint>
 
-#include "jsc_gtest_fixture.h"
+#include "napi_gtest_fixture.h"
 
 namespace {
 

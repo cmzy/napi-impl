@@ -22,7 +22,7 @@
 
 #include "js_native_api_jsc.h"  // internal: napi_env__ layout + JSGarbageCollect
 
-#include "jsc_gtest_fixture.h"
+#include "napi_gtest_fixture.h"
 
 namespace {
 
