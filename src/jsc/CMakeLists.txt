@@ -90,6 +90,11 @@ if(NAPI_JSC_BUILD_TESTS)
     add_executable(napi_object_gtest ${NAPI_IMPL_ROOT}/test/napi_object_gtest.cc)
     target_link_libraries(napi_object_gtest PRIVATE napi_flags napi_jsc GTest::gtest_main)
     add_test(NAME napi_object_gtest COMMAND napi_object_gtest)
+
+    # Full TypedArray-kind matrix + external arraybuffer (napi<->JSC type switches).
+    add_executable(napi_typedarray_gtest ${NAPI_IMPL_ROOT}/test/napi_typedarray_gtest.cc)
+    target_link_libraries(napi_typedarray_gtest PRIVATE napi_flags napi_jsc GTest::gtest_main)
+    add_test(NAME napi_typedarray_gtest COMMAND napi_typedarray_gtest)
   endif()
 
   # The upstream js-native-api host runner (test/runner.cc), built for JSC via

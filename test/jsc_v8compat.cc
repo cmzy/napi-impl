@@ -71,6 +71,7 @@ TEST_F(NapiExtras, SharedArrayBuffer) {
 TEST_F(NapiExtras, Inspector) {
   // start/stop are real (toggle JSGlobalContextSetInspectable + set name).
   ASSERT_EQ(napi_v8_inspector_start(env_, 9229, "napi-jsc-test"), napi_ok);
+  ASSERT_EQ(napi_v8_inspector_wait_for_connection(env_), napi_ok);  // no-op on JSC (no client signal)
   EXPECT_TRUE(napi_v8_inspector_is_paused(env_) == false) << "inspector: should not be paused";
   size_t dispatched = 123;
   ASSERT_EQ(napi_v8_inspector_pump_messages(env_, &dispatched), napi_ok);
