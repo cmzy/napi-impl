@@ -322,9 +322,12 @@ def build_hermes_path(platform: str, arch: str, config: str, package: bool):
             f"-DCMAKE_BUILD_TYPE={build_type}",
             "-DHERMES_ENABLE_TOOLS=ON",         # hermesc compiles the baked-in JS
             "-DHERMES_ENABLE_TEST_SUITE=OFF"]
+        # Native linux/mac run `ctest -R hermes_smoke`, so build the gtest smoke
+        # test (gated on NAPI_GTEST, which FetchContent's googletest). Android/iOS
+        # don't ctest, so they stay gtest-free.
         lib_cfg = tc_arg + [
             "-DNAPI_ENGINE=hermes", f"-DCMAKE_BUILD_TYPE={build_type}",
-            f"-DHERMES_BUILD_DIR={hermes_build}"]
+            f"-DHERMES_BUILD_DIR={hermes_build}", "-DNAPI_GTEST=ON"]
     else:
         raise SystemExit(f"[todo] hermes platform '{platform}' not wired (PLAN.md M7.3)")
 
@@ -369,7 +372,11 @@ def build_jsc_path(platform: str, arch: str, config: str, package: bool):
     lib_build = ROOT / "out" / "build" / f"jsc-{platform}-{arch}-{config}"
     cfg = ["-DNAPI_ENGINE=jsc", f"-DCMAKE_BUILD_TYPE={build_type}"]
     if platform == "mac":
-        cfg += [f"-DCMAKE_OSX_ARCHITECTURES={arch}"]
+        # Native mac runs the gtest unit suites via ctest, so build them (the
+        # converted smoke/weakref/v8compat/buffers + the rest are gated on
+        # NAPI_GTEST, which also FetchContent's googletest). iOS only runs the
+        # js-native-api suite through the runner, so it stays gtest-free.
+        cfg += [f"-DCMAKE_OSX_ARCHITECTURES={arch}", "-DNAPI_GTEST=ON"]
     elif platform in ("ios", "ios_sim"):
         toolchain = ROOT / "cmake" / "toolchains" / "ios.cmake"
         ios_platform = "SIMULATOR" if platform == "ios_sim" else "OS"
