@@ -12,6 +12,7 @@ object.cc
 promise.cc
 reference.cc
 sab.cc
+serialize.cc
 scope.cc
 script.cc
 string.cc

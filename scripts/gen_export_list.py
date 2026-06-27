@@ -74,8 +74,18 @@ EMBEDDING_V8_ONLY = [
     "node_api_create_object_with_properties",
 ]
 
+# Structured-clone serialization (napi_v8/serialize.h) — V8 ValueSerializer-backed,
+# V8 ONLY. Kept out of EMBEDDING_V8_ONLY because that list is shared with the jsc
+# build, which does not implement these; exporting an unimplemented symbol there
+# would break the jsc link.
+EMBEDDING_V8_SERIALIZE = [
+    "napi_v8_serialize",
+    "napi_v8_deserialize",
+    "napi_v8_free_serialized_data",
+]
+
 # Back-compat alias (the V8 path used this single list).
-EMBEDDING_SYMBOLS = EMBEDDING_COMMON + EMBEDDING_V8_ONLY
+EMBEDDING_SYMBOLS = EMBEDDING_COMMON + EMBEDDING_V8_ONLY + EMBEDDING_V8_SERIALIZE
 
 
 def parse_def(path: Path) -> list[str]:
@@ -135,9 +145,13 @@ def main():
 
     # jsc implements the inspector + SharedArrayBuffer extensions (on JSC's own
     # RemoteInspector / SAB), so it exports the same set as v8; hermes/quickjs
-    # do not.
-    embedding = (EMBEDDING_COMMON + EMBEDDING_V8_ONLY
-                 if args.engine in ("v8", "jsc") else EMBEDDING_COMMON)
+    # do not. The ValueSerializer-backed serialize API is V8-only (jsc has no impl).
+    if args.engine == "v8":
+        embedding = EMBEDDING_COMMON + EMBEDDING_V8_ONLY + EMBEDDING_V8_SERIALIZE
+    elif args.engine == "jsc":
+        embedding = EMBEDDING_COMMON + EMBEDDING_V8_ONLY
+    else:
+        embedding = EMBEDDING_COMMON
     prefix = f"napi_{args.engine}"
 
     EXPORTS.mkdir(parents=True, exist_ok=True)

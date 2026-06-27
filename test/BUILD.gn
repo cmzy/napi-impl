@@ -84,6 +84,7 @@ foreach(t,
           "napi_more_gtest",
           "napi_more2_gtest",
           "node_api_extras_gtest",
+          "serialize_gtest",
         ]) {
   executable(t) {
     testonly = true
@@ -112,6 +113,7 @@ group("test") {
     ":node_api_extras_gtest",
     ":run",
     ":runner",
+    ":serialize_gtest",
     ":wrap_bench",
   ]
 
