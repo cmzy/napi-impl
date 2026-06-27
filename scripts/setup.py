@@ -105,11 +105,26 @@ def step_gclient_sync():
         run(["gclient", "sync", "--no-history", "--shallow",
              f"--revision=v8@{version}"], cwd=str(THIRD_PARTY), env=env)
     else:
-        # Already cloned; switch to requested tag and sync deps.
+        # Already cloned (e.g. CI restored third_party/v8 from cache); switch to
+        # the requested tag and re-sync deps. Use --reset --force so the sync
+        # discards any local modifications in the managed dependency checkouts —
+        # notably v8/build, which our patches (0001-build-...BUILD.gn) dirty.
+        # Without it, gclient aborts with "You have uncommitted changes" whenever
+        # a cached tree carries the applied patch (the post-job cache save stores
+        # the dirtied tree, poisoning the next run).
         run(["git", "fetch", "--depth=1", "origin", f"refs/tags/{version}:refs/tags/{version}"],
             cwd=str(V8_DIR), env=env)
         run(["git", "checkout", version], cwd=str(V8_DIR), env=env)
-        run(["gclient", "sync", "--no-history", "--shallow"], cwd=str(THIRD_PARTY), env=env)
+        run(["gclient", "sync", "--no-history", "--shallow", "--reset", "--force"],
+            cwd=str(THIRD_PARTY), env=env)
+        # --reset reverted the managed deps to their pinned revisions, dropping
+        # any patches that were applied into them. Clear the applied-marker so
+        # step_apply_patches() re-applies them onto the now-pristine tree (in CI
+        # the marker is gitignored and absent anyway; this keeps local re-runs
+        # correct).
+        applied_marker = PATCHES_V8 / ".applied"
+        if applied_marker.exists():
+            applied_marker.unlink()
 
 
 def step_apply_patches():
