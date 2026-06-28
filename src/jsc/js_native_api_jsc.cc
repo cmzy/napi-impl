@@ -581,15 +581,27 @@ napi_status NAPI_CDECL napi_get_value_bool(napi_env env, napi_value value, bool*
 
 // ---- strings --------------------------------------------------------------
 
-napi_status NAPI_CDECL napi_create_string_utf8(napi_env env, const char* str, size_t length, napi_value* result) {
+napi_status NAPI_CDECL napi_create_string_utf8(napi_env env, const char* str, size_t length, napi_value* result) {  // AME-JSC-STRLEN-FIX
     CHECK_ENV(env);
     CHECK_ARG(env, result);
-    JSStringRef s = (length == NAPI_AUTO_LENGTH) ? JSStringCreateWithUTF8CString(str ? str : "")
-                                                 : JSStr(str ? str : "", length).s;
-    bool auto_len = (length == NAPI_AUTO_LENGTH);
-    JSValueRef v = JSValueMakeString(env->ctx, s);
-    if (auto_len)
-        JSStringRelease(s);  // JSStr releases its own; the auto path owns `s`
+    const char* p = str ? str : "";
+    JSValueRef v;
+    if (length == NAPI_AUTO_LENGTH) {
+        JSStringRef s = JSStringCreateWithUTF8CString(p);
+        v = JSValueMakeString(env->ctx, s);
+        JSStringRelease(s);
+    } else {
+        // AmeCanvas fix: keep the JSStr in a *named* local. The original code did
+        // `JSStr(str, length).s` — a temporary whose ~JSStr (JSStringRelease) runs
+        // at the end of the full-expression, freeing the JSStringRef *before*
+        // JSValueMakeString below uses it (UAF) → JSValueMakeString sees a freed
+        // string and yields an EMPTY value. node-addon-api's String::New(const
+        // char*) passes strlen (not NAPI_AUTO_LENGTH), so this explicit-length
+        // path is hit for the injected JS bundle and *every* eval'd script — the
+        // UAF made all of them empty, so no JS ran at all. See docs/JSC_INTEGRATION.md.
+        JSStr holder(p, length);
+        v = JSValueMakeString(env->ctx, holder.s);
+    }
     *result = napi_jsc_add_handle(env, v);
     return napi_jsc_clear_error(env);
 }
