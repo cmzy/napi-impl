@@ -311,9 +311,53 @@ jobs:
           name: napi-v8-windows-x64
           path: out/dist/napi-v8-windows-x64.zip
 
+  jsc-apple:
+    name: JSC static .xcframework + cmake (macOS + iOS)
+    runs-on: macos-15
+    timeout-minutes: 90
+    # JSC targets Apple's system JavaScriptCore.framework — no V8/Hermes engine to
+    # build, so this job needs neither the V8 source cache nor scripts/setup.py.
+    # Ships a STATIC archive (libnapi_jsc.a): per-arch CMake packages + a
+    # multi-slice NapiJSC.xcframework (mac arm64+x86_64, iOS device arm64, iOS
+    # simulator arm64+x86_64).
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12' }
+
+      - name: Install build deps
+        run: brew install ninja
+
+      - name: Build JSC static slices + cmake packages
+        run: |
+          for slice in mac:arm64 mac:x86_64 ios:arm64 ios_sim:arm64 ios_sim:x86_64; do
+            python3 scripts/build.py --engine=jsc \
+              --platform="${slice%%:*}" --arch="${slice##*:}" --package
+          done
+
+      - name: Assemble NapiJSC.xcframework
+        run: python3 scripts/package_apple.py --engine=jsc --target=xcframework --version=${GITHUB_REF_NAME#v}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: NapiJSC.xcframework
+          path: out/dist/NapiJSC.xcframework
+
+      - uses: actions/upload-artifact@v4
+        with: { name: napi-jsc-mac-arm64,     path: out/dist/napi-jsc-mac-arm64.tar.gz }
+      - uses: actions/upload-artifact@v4
+        with: { name: napi-jsc-mac-x86_64,    path: out/dist/napi-jsc-mac-x86_64.tar.gz }
+      - uses: actions/upload-artifact@v4
+        with: { name: napi-jsc-ios-arm64,     path: out/dist/napi-jsc-ios-arm64.tar.gz }
+      - uses: actions/upload-artifact@v4
+        with: { name: napi-jsc-ios_sim-arm64, path: out/dist/napi-jsc-ios_sim-arm64.tar.gz }
+      - uses: actions/upload-artifact@v4
+        with: { name: napi-jsc-ios_sim-x86_64, path: out/dist/napi-jsc-ios_sim-x86_64.tar.gz }
+
   release:
     name: Attach to release
-    needs: [macos, ios, linux, android, windows]
+    needs: [macos, ios, linux, android, windows, jsc-apple]
     if: github.event_name == 'release' || startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-22.04
     permissions:
@@ -329,6 +373,7 @@ jobs:
           cd dist
           (cd NapiV8-macos.framework && zip -r ../NapiV8-macos.framework.zip .)
           (cd NapiV8-ios.framework   && zip -r ../NapiV8-ios.framework.zip .)
+          (cd NapiJSC.xcframework    && zip -r ../NapiJSC.xcframework.zip .)
 
       - name: Compose release body
         run: |
@@ -339,6 +384,7 @@ jobs:
             echo "| ---- | -------- |"
             echo "| \`NapiV8-macos.framework.zip\` | macOS framework (arm64 + x86_64 lipo) |"
             echo "| \`NapiV8-ios.framework.zip\` | iOS framework (device arm64) |"
+            echo "| \`NapiJSC.xcframework.zip\` | JSC static xcframework (macOS + iOS device + iOS simulator) |"
             echo "| \`napi-v8.aar\` | Android (arm64-v8a + x86_64, Prefab v2) |"
             echo "| \`napi-v8-mac-arm64.tar.gz\` | macOS arm64 CMake |"
             echo "| \`napi-v8-mac-x86_64.tar.gz\` | macOS x86_64 CMake |"
@@ -349,6 +395,11 @@ jobs:
             echo "| \`napi-v8-android-x86_64.tar.gz\` | Android x86_64 CMake |"
             echo "| \`napi-v8-linux-x64.tar.gz\` | Linux x64 CMake |"
             echo "| \`napi-v8-windows-x64.zip\` | Windows x64 CMake |"
+            echo "| \`napi-jsc-mac-arm64.tar.gz\` | JSC macOS arm64 CMake (static) |"
+            echo "| \`napi-jsc-mac-x86_64.tar.gz\` | JSC macOS x86_64 CMake (static) |"
+            echo "| \`napi-jsc-ios-arm64.tar.gz\` | JSC iOS device arm64 CMake (static) |"
+            echo "| \`napi-jsc-ios_sim-arm64.tar.gz\` | JSC iOS simulator arm64 CMake (static) |"
+            echo "| \`napi-jsc-ios_sim-x86_64.tar.gz\` | JSC iOS simulator x86_64 CMake (static) |"
             echo ""
             for f in dist/napi-v8-linux-x64/napi-v8-linux-x64/BUILD_INFO.md \
                      dist/NapiV8-macos.framework/BUILD_INFO.md; do
@@ -371,6 +422,12 @@ jobs:
           files: |
             dist/NapiV8-macos.framework.zip
             dist/NapiV8-ios.framework.zip
+            dist/NapiJSC.xcframework.zip
+            dist/napi-jsc-mac-arm64/napi-jsc-mac-arm64.tar.gz
+            dist/napi-jsc-mac-x86_64/napi-jsc-mac-x86_64.tar.gz
+            dist/napi-jsc-ios-arm64/napi-jsc-ios-arm64.tar.gz
+            dist/napi-jsc-ios_sim-arm64/napi-jsc-ios_sim-arm64.tar.gz
+            dist/napi-jsc-ios_sim-x86_64/napi-jsc-ios_sim-x86_64.tar.gz
             dist/napi-v8.aar/napi-v8.aar
             dist/napi-v8-mac-arm64/napi-v8-mac-arm64.tar.gz
             dist/napi-v8-mac-x86_64/napi-v8-mac-x86_64.tar.gz

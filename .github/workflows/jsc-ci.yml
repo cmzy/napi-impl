@@ -103,3 +103,57 @@ jobs:
         run: |
           python3 scripts/run_tests.py --engine=jsc --platform=ios_sim --arch=arm64 \
             --keep-going --min-pass "${JSC_MIN_PASS}"
+
+  package:
+    name: Static lib + .xcframework (macOS + iOS device + iOS simulator)
+    runs-on: macos-15
+    timeout-minutes: 60
+    # JSC is distributed as a STATIC archive (libnapi_jsc.a) — iOS free-team apps
+    # have no dynamic-code entitlement and consumers prefer static linking. This
+    # job builds the per-arch static CMake packages and assembles the multi-slice
+    # NapiJSC.xcframework (mac arm64+x86_64, iOS device arm64, iOS simulator
+    # arm64+x86_64), then gates on the static archive's export discipline (only
+    # napi_*/node_api_* re-export from a consumer link; internals stay hidden).
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12' }
+
+      - name: Install build deps
+        run: brew install ninja
+
+      - name: Build static lib + cmake package (every Apple slice)
+        run: |
+          for slice in mac:arm64 mac:x86_64 ios:arm64 ios_sim:arm64 ios_sim:x86_64; do
+            python3 scripts/build.py --engine=jsc \
+              --platform="${slice%%:*}" --arch="${slice##*:}" --package
+          done
+
+      - name: Assemble NapiJSC.xcframework
+        run: python3 scripts/package_apple.py --engine=jsc --target=xcframework --version=0.0.0-ci
+
+      - name: Verify outputs exist
+        run: |
+          test -d out/dist/NapiJSC.xcframework
+          for s in mac-arm64 mac-x86_64 ios-arm64 ios_sim-arm64 ios_sim-x86_64; do
+            test -f "out/dist/napi-jsc-$s.tar.gz" || { echo "missing napi-jsc-$s"; exit 1; }
+          done
+
+      - name: Static-archive export discipline (only napi_*, internals hidden)
+        run: |
+          A=out/build/jsc-mac-arm64-release/src/jsc/libnapi_jsc.a
+          # A consumer that links the archive must re-export exactly the napi_*
+          # surface and nothing else; prove it by linking into a throwaway dylib.
+          clang++ -dynamiclib -arch arm64 -fvisibility=hidden -x c++ /dev/null \
+            -Wl,-force_load,"$A" -framework JavaScriptCore -o /tmp/probe.dylib
+          TOTAL=$(nm -gU /tmp/probe.dylib | awk '{print $3}' | grep -c .)
+          NAPI=$(nm -gU /tmp/probe.dylib | awk '{print $3}' | grep -cE '^_(napi|node_api)_')
+          echo "static->dylib exports: napi_*=$NAPI / total=$TOTAL"
+          test "$NAPI" -eq "$TOTAL"   # zero non-napi exports leaked
+          test "$NAPI" -ge 150        # full surface + V8-compat extensions
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: NapiJSC.xcframework
+          path: out/dist/NapiJSC.xcframework
