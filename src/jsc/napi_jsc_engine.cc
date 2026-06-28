@@ -79,15 +79,26 @@ napi_status NAPI_CDECL napi_create_runtime(napi_platform platform, napi_runtime*
     return napi_ok;
 }
 
-napi_status NAPI_CDECL napi_destroy_runtime(napi_runtime runtime) {
+napi_status NAPI_CDECL napi_destroy_runtime(napi_runtime runtime) {  // AME-JSC-TEARDOWN-FIX
     if (runtime == nullptr)
         return napi_invalid_arg;
+    // AmeCanvas teardown fix: release the runtime's context-group ref *before*
+    // deleting the env. The env's JSGlobalContext holds its own (implicit) group
+    // ref, so the VM stays alive across this release; napi_jsc_env_delete's
+    // JSGlobalContextRelease then drops the *last* group ref, tearing the VM down
+    // — and firing any straggler finalizers — while the env is still alive
+    // (env_delete drains them before `delete env`). The original order released the
+    // group *after* env_delete, so VM teardown fired finalizers that dereferenced
+    // the freed env (UAF on env->finalizer_mu -> "mutex lock failed: Invalid
+    // argument" abort). See docs/JSC_INTEGRATION.md.
+    if (runtime->group != nullptr) {
+        JSContextGroupRelease(runtime->group);
+        runtime->group = nullptr;
+    }
     if (runtime->env != nullptr) {
-        napi_jsc_env_delete(runtime->env);  // tears down ctx + finalizers
+        napi_jsc_env_delete(runtime->env);  // releases ctx (last group ref -> VM teardown), drains finalizers, frees env
         runtime->env = nullptr;
     }
-    if (runtime->group != nullptr)
-        JSContextGroupRelease(runtime->group);
     delete runtime;
     return napi_ok;
 }

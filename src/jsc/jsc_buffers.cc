@@ -222,9 +222,24 @@ napi_status NAPI_CDECL napi_create_typedarray(napi_env env, napi_typedarray_type
     NAPI_PREAMBLE(env);
     CHECK_ARG(env, arraybuffer);
     CHECK_ARG(env, result);
-    JSTypedArrayType jt = ToJSTA(type);
-    RETURN_STATUS_IF_FALSE(env, jt != kJSTypedArrayTypeNone, napi_invalid_arg);  // e.g. float16: unsupported
     RETURN_STATUS_IF_FALSE(env, IsArrayBufferVal(env, arraybuffer), napi_arraybuffer_expected);
+    // AmeCanvas fix: JSC's C typed-array API has no Float16 type, but the engine has
+    // the `Float16Array` global — construct it via JS so napi can make/round-trip
+    // Float16Arrays (e.g. structuredClone). AME-JSC-FLOAT16-FIX
+    if (type == napi_float16_array) {
+        JSObjectRef f16 = GlobalCtor(env, "Float16Array");
+        RETURN_STATUS_IF_FALSE(env, f16 != nullptr, napi_generic_failure);
+        JSValueRef args[3] = {ToJS(arraybuffer), JSValueMakeNumber(env->ctx, static_cast<double>(byte_offset)),
+                              JSValueMakeNumber(env->ctx, static_cast<double>(length))};
+        JSValueRef cexc = nullptr;
+        JSObjectRef ta = JSObjectCallAsConstructor(env->ctx, f16, 3, args, &cexc);
+        if (cexc != nullptr)
+            return napi_jsc_record_exception(env, cexc);
+        *result = napi_jsc_add_handle(env, ta);
+        return napi_jsc_clear_error(env);
+    }
+    JSTypedArrayType jt = ToJSTA(type);
+    RETURN_STATUS_IF_FALSE(env, jt != kJSTypedArrayTypeNone, napi_invalid_arg);
     JSObjectRef buf = ToObj(env, arraybuffer);
     JSValueRef exc = nullptr;
     JSObjectRef ta = JSObjectMakeTypedArrayWithArrayBufferAndOffset(env->ctx, jt, buf, byte_offset, length, &exc);
@@ -241,6 +256,31 @@ napi_status NAPI_CDECL napi_get_typedarray_info(napi_env env, napi_value typedar
     CHECK_ARG(env, typedarray);
     JSValueRef exc = nullptr;
     JSTypedArrayType jt = JSValueGetTypedArrayType(env->ctx, ToJS(typedarray), &exc);
+    // AmeCanvas fix: JSC's C typed-array API doesn't recognize Float16Array (returns
+    // kJSTypedArrayTypeNone). Detect it via instanceof and read geometry through JS
+    // properties so structuredClone/Blob etc. can introspect it. AME-JSC-FLOAT16-FIX
+    if (jt == kJSTypedArrayTypeNone) {
+        JSObjectRef f16 = GlobalCtor(env, "Float16Array");
+        if (f16 != nullptr && JSValueIsInstanceOfConstructor(env->ctx, ToJS(typedarray), f16, nullptr)) {
+            JSObjectRef o16 = ToObj(env, typedarray);
+            size_t off = static_cast<size_t>(JSValueToNumber(env->ctx, GetProp(env, o16, "byteOffset"), nullptr));
+            size_t len = static_cast<size_t>(JSValueToNumber(env->ctx, GetProp(env, o16, "length"), nullptr));
+            if (type != nullptr)
+                *type = napi_float16_array;
+            if (length != nullptr)
+                *length = len;
+            if (byte_offset != nullptr)
+                *byte_offset = off;
+            JSObjectRef ab = JSValueToObject(env->ctx, GetProp(env, o16, "buffer"), nullptr);
+            if (arraybuffer != nullptr)
+                *arraybuffer = napi_jsc_add_handle(env, ab);
+            if (data != nullptr) {
+                void* base = JSObjectGetArrayBufferBytesPtr(env->ctx, ab, &exc);
+                *data = base != nullptr ? static_cast<void*>(static_cast<char*>(base) + off) : nullptr;
+            }
+            return napi_jsc_clear_error(env);
+        }
+    }
     napi_typedarray_type nt;
     RETURN_STATUS_IF_FALSE(env, FromJSTA(jt, &nt), napi_invalid_arg);
     JSObjectRef o = ToObj(env, typedarray);
@@ -248,10 +288,20 @@ napi_status NAPI_CDECL napi_get_typedarray_info(napi_env env, napi_value typedar
         *type = nt;
     if (length != nullptr)
         *length = JSObjectGetTypedArrayLength(env->ctx, o, &exc);
-    if (data != nullptr)
-        *data = JSObjectGetTypedArrayBytesPtr(env->ctx, o, &exc);
+    // AmeCanvas fix: JSObjectGetTypedArrayBytesPtr returns the *backing-store*
+    // (ArrayBuffer) base, not the view's first element. Node N-API requires `data`
+    // to be adjusted by byte_offset so it points at the view's first element
+    // (node-addon-api's TypedArray::Data() relies on this). Without the offset,
+    // every WebGL/typed-array read/write through a non-zero-byteOffset view (e.g.
+    // `arr.subarray(k)`, getBufferSubData into a view) hit the wrong bytes.
+    // AME-JSC-TAOFFSET-FIX
+    size_t ta_off = JSObjectGetTypedArrayByteOffset(env->ctx, o, &exc);
+    if (data != nullptr) {
+        void* base = JSObjectGetTypedArrayBytesPtr(env->ctx, o, &exc);
+        *data = base != nullptr ? static_cast<void*>(static_cast<char*>(base) + ta_off) : nullptr;
+    }
     if (byte_offset != nullptr)
-        *byte_offset = JSObjectGetTypedArrayByteOffset(env->ctx, o, &exc);
+        *byte_offset = ta_off;
     if (arraybuffer != nullptr) {
         JSObjectRef buf = JSObjectGetTypedArrayBuffer(env->ctx, o, &exc);
         *arraybuffer = napi_jsc_add_handle(env, buf);

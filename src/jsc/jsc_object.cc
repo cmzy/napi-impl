@@ -78,8 +78,50 @@ bool InstanceOfGlobal(napi_env env, JSValueRef v, const char* ctor_name) {
     return ctor != nullptr && JSValueIsInstanceOfConstructor(env->ctx, v, ctor, nullptr);
 }
 
-JSObjectRef MakeFunction(napi_env env, napi_callback cb, void* data) {
-    return JSObjectMake(env->ctx, env->function_class, new CallbackData{env, cb, data});
+JSObjectRef MakeFunction(napi_env env, napi_callback cb, void* data) {  // AME-JSC-FNPROTO-FIX
+    JSObjectRef fn = JSObjectMake(env->ctx, env->function_class, new CallbackData{env, cb, data});
+    // AmeCanvas fix: napi callbacks are instances of a custom JSClass whose default
+    // [[Prototype]] is Object.prototype, so they lack Function.prototype methods
+    // (.call/.apply/.bind) even though they're callable. Reparent to
+    // Function.prototype so JS that treats them as ordinary functions works
+    // (e.g. the WPT harness does `window.addEventListener.bind(window)`).
+    if (JSObjectRef funcCtor = GlobalCtor(env, "Function")) {
+        JSValueRef proto = JSObjectGetProperty(env->ctx, funcCtor, JSStr("prototype"), nullptr);
+        if (proto != nullptr && JSValueIsObject(env->ctx, proto))
+            JSObjectSetPrototype(env->ctx, fn, proto);
+    }
+    return fn;
+}
+
+// Install Ctor[Symbol.hasInstance] implementing OrdinaryHasInstance, so
+// `x instanceof Ctor` works under JSC. JSC's `instanceof` operator does NOT fall
+// back to OrdinaryHasInstance for a callable custom-JSClass constructor: such a
+// ctor is `typeof === "function"` with a correct `.prototype` chain, yet because
+// it doesn't inherit Function.prototype[@@hasInstance] (its [[Prototype]] is
+// Object.prototype) and has no own @@hasInstance, JSC's instanceof returns false.
+// Defining an own @@hasInstance forces the spec's instOfHandler path. (Reparenting
+// the ctor to Function.prototype instead is wrong: Function.prototype.name is
+// non-writable, which then blanks the class's own name.)  AME-JSC-HASINSTANCE-FIX
+void InstallHasInstance(JSContextRef ctx, JSObjectRef ctor) {
+    JSValueRef symCtor = JSObjectGetProperty(ctx, JSContextGetGlobalObject(ctx), JSStr("Symbol"), nullptr);
+    if (!JSValueIsObject(ctx, symCtor))
+        return;
+    JSValueRef sym = JSObjectGetProperty(ctx, JSValueToObject(ctx, symCtor, nullptr), JSStr("hasInstance"), nullptr);
+    if (sym == nullptr || JSValueGetType(ctx, sym) != kJSTypeSymbol)
+        return;
+    JSStringRef src = JSStringCreateWithUTF8CString(
+        "(function(O){if(O===null||(typeof O!=='object'&&typeof O!=='function'))return false;"
+        "var P=this.prototype;if(P===null||typeof P!=='object')return false;"
+        "var p=Object.getPrototypeOf(O);while(p!==null){if(p===P)return true;p=Object.getPrototypeOf(p);}"
+        "return false;})");
+    JSValueRef fn = JSEvaluateScript(ctx, src, nullptr, nullptr, 0, nullptr);
+    JSStringRelease(src);
+    if (!JSValueIsObject(ctx, fn))
+        return;
+    JSObjectSetPropertyForKey(ctx, ctor, sym, fn,
+                             kJSPropertyAttributeReadOnly | kJSPropertyAttributeDontEnum |
+                                     kJSPropertyAttributeDontDelete,
+                             nullptr);
 }
 
 JSPropertyAttributes ToJSAttrs(napi_property_attributes a) {
@@ -597,12 +639,26 @@ napi_status NAPI_CDECL napi_define_class(napi_env env, const char* utf8name, siz
     JSObjectSetProperty(ctx, ctor, JSStr("prototype"), proto,
                         kJSPropertyAttributeReadOnly | kJSPropertyAttributeDontEnum | kJSPropertyAttributeDontDelete,
                         nullptr);
-    JSObjectSetProperty(ctx, proto, JSStr("constructor"), ctor, kJSPropertyAttributeDontEnum, nullptr);
+    // AmeCanvas fix: define `constructor` non-enumerable (writable+configurable),
+    // per the ES spec / matching V8. JSObjectSetProperty's kJSPropertyAttributeDontEnum
+    // is NOT honored here under JSC — the property comes out enumerable, leaks into
+    // `for..in`, and trips conformance that enumerates an interface's own functions
+    // (e.g. WebGL offscreencanvas/methods). Use the Object.defineProperty path
+    // (same as DefineOne for methods), which applies attributes reliably.
+    // AME-JSC-CTORENUM-FIX
+    {
+        napi_property_descriptor cd = {};
+        cd.utf8name = "constructor";
+        cd.value = napi_jsc_add_handle(env, ctor);
+        cd.attributes = static_cast<napi_property_attributes>(napi_writable | napi_configurable);
+        DefineOne(env, proto, &cd);
+    }
     if (utf8name != nullptr) {
         std::string name = (length == NAPI_AUTO_LENGTH) ? std::string(utf8name) : std::string(utf8name, length);
         JSObjectSetProperty(ctx, ctor, JSStr("name"), JSValueMakeString(ctx, JSStr(name.c_str())),
                             kJSPropertyAttributeReadOnly | kJSPropertyAttributeDontEnum, nullptr);
     }
+    InstallHasInstance(ctx, ctor);  // make `x instanceof Ctor` work under JSC (AME-JSC-HASINSTANCE-FIX)
 
     for (size_t i = 0; i < prop_count; ++i) {
         const napi_property_descriptor* p = &props[i];
@@ -1027,6 +1083,12 @@ napi_status NAPI_CDECL napi_is_typedarray(napi_env env, napi_value value, bool* 
     JSValueRef exc = nullptr;
     JSTypedArrayType t = JSValueGetTypedArrayType(env->ctx, ToJS(value), &exc);
     *result = t != kJSTypedArrayTypeNone && t != kJSTypedArrayTypeArrayBuffer;
+    if (!*result) {
+        // AmeCanvas fix: JSC's C typed-array API doesn't recognize Float16Array. AME-JSC-FLOAT16-FIX
+        JSObjectRef f16 = GlobalCtor(env, "Float16Array");
+        if (f16 != nullptr && JSValueIsInstanceOfConstructor(env->ctx, ToJS(value), f16, nullptr))
+            *result = true;
+    }
     return napi_jsc_clear_error(env);
 }
 
