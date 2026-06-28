@@ -830,10 +830,17 @@ napi_status NAPI_CDECL napi_coerce_to_bool(napi_env env, napi_value value, napi_
     *result = napi_jsc_add_handle(env, JSValueMakeBoolean(env->ctx, JSValueToBoolean(env->ctx, ToJS(value))));
     return napi_jsc_clear_error(env);
 }
-napi_status NAPI_CDECL napi_coerce_to_number(napi_env env, napi_value value, napi_value* result) {
+napi_status NAPI_CDECL napi_coerce_to_number(napi_env env, napi_value value, napi_value* result) {  // AME-JSC-BIGINT-TONUMBER-FIX
     NAPI_PREAMBLE(env);
     CHECK_ARG(env, value);
     CHECK_ARG(env, result);
+    // AmeCanvas fix: ES ToNumber(BigInt) throws TypeError, but JSC's JSValueToNumber
+    // is lenient on BigInt (returns NaN, no exception), so WebIDL `double` conversions
+    // silently accepted BigInt (e.g. roundRect(0n) didn't throw). Reject explicitly.
+    if (JSValueGetType(env->ctx, ToJS(value)) == kJSTypeBigInt) {
+        napi_throw_type_error(env, nullptr, "Cannot convert a BigInt value to a number");
+        return napi_jsc_set_error(env, napi_pending_exception);
+    }
     JSValueRef exc = nullptr;
     double d = JSValueToNumber(env->ctx, ToJS(value), &exc);
     if (exc != nullptr)
