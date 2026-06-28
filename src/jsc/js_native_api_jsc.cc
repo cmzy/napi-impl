@@ -803,6 +803,11 @@ napi_status NAPI_CDECL napi_typeof(napi_env env, napi_value value, napi_valuetyp
         case kJSTypeNumber: *result = napi_number; break;
         case kJSTypeString: *result = napi_string; break;
         case kJSTypeSymbol: *result = napi_symbol; break;
+        // AmeCanvas fix: BigInt was missing — it fell through to the object branch and
+        // typeof'd as napi_object, so WebIDL union/sequence conversions accepted BigInt
+        // where they must throw TypeError (e.g. roundRect(0n), new Blob(7n)).
+        // kJSTypeBigInt is macOS 15+/iOS 18+; harmless elsewhere (never returned). AME-JSC-BIGINT-TYPEOF-FIX
+        case kJSTypeBigInt: *result = napi_bigint; break;
         case kJSTypeObject:
         default: {
             JSObjectRef obj = JSValueToObject(ctx, v, nullptr);
