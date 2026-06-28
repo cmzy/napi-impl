@@ -248,10 +248,20 @@ napi_status NAPI_CDECL napi_get_typedarray_info(napi_env env, napi_value typedar
         *type = nt;
     if (length != nullptr)
         *length = JSObjectGetTypedArrayLength(env->ctx, o, &exc);
-    if (data != nullptr)
-        *data = JSObjectGetTypedArrayBytesPtr(env->ctx, o, &exc);
+    // AmeCanvas fix: JSObjectGetTypedArrayBytesPtr returns the *backing-store*
+    // (ArrayBuffer) base, not the view's first element. Node N-API requires `data`
+    // to be adjusted by byte_offset so it points at the view's first element
+    // (node-addon-api's TypedArray::Data() relies on this). Without the offset,
+    // every WebGL/typed-array read/write through a non-zero-byteOffset view (e.g.
+    // `arr.subarray(k)`, getBufferSubData into a view) hit the wrong bytes.
+    // AME-JSC-TAOFFSET-FIX
+    size_t ta_off = JSObjectGetTypedArrayByteOffset(env->ctx, o, &exc);
+    if (data != nullptr) {
+        void* base = JSObjectGetTypedArrayBytesPtr(env->ctx, o, &exc);
+        *data = base != nullptr ? static_cast<void*>(static_cast<char*>(base) + ta_off) : nullptr;
+    }
     if (byte_offset != nullptr)
-        *byte_offset = JSObjectGetTypedArrayByteOffset(env->ctx, o, &exc);
+        *byte_offset = ta_off;
     if (arraybuffer != nullptr) {
         JSObjectRef buf = JSObjectGetTypedArrayBuffer(env->ctx, o, &exc);
         *arraybuffer = napi_jsc_add_handle(env, buf);
