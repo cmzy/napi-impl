@@ -374,11 +374,13 @@ def build_jsc_path(platform: str, arch: str, config: str, package: bool):
     lib_build = ROOT / "out" / "build" / f"jsc-{platform}-{arch}-{config}"
     cfg = ["-DNAPI_ENGINE=jsc", f"-DCMAKE_BUILD_TYPE={build_type}"]
     if platform == "mac":
-        # Native mac runs the gtest unit suites via ctest, so build them (the
-        # converted smoke/weakref/v8compat/buffers + the rest are gated on
-        # NAPI_GTEST, which also FetchContent's googletest). iOS only runs the
-        # js-native-api suite through the runner, so it stays gtest-free.
-        cfg += [f"-DCMAKE_OSX_ARCHITECTURES={arch}", "-DNAPI_GTEST=ON"]
+        cfg += [f"-DCMAKE_OSX_ARCHITECTURES={arch}"]
+        # Native mac runs the gtest unit suites via ctest, so build them (gated on
+        # NAPI_GTEST, which FetchContent's googletest). A packaging build only needs
+        # the static archive, so skip the (network-fetching) gtest deps there. iOS
+        # only runs the js-native-api suite via the runner, so it stays gtest-free.
+        if not package:
+            cfg += ["-DNAPI_GTEST=ON"]
     elif platform in ("ios", "ios_sim"):
         toolchain = ROOT / "cmake" / "toolchains" / "ios.cmake"
         ios_platform = "SIMULATOR" if platform == "ios_sim" else "OS"
@@ -389,12 +391,23 @@ def build_jsc_path(platform: str, arch: str, config: str, package: bool):
             f"[todo] jsc wired for mac/ios/ios_sim only; '{platform}' needs a "
             "built WebKit JavaScriptCore (J2)")
     run(["cmake", "-S", str(ROOT), "-B", str(lib_build), "-G", "Ninja", *cfg])
-    run(["cmake", "--build", str(lib_build)])
-
-    dylib = lib_build / "src" / "jsc" / "libnapi_jsc.dylib"
-    print(f"\n[done] artifacts -> {lib_build / 'src' / 'jsc'} ({dylib.name})")
+    # A packaging build only needs the static archive (libnapi_jsc.a); a plain
+    # build (CI test job) builds everything (shared lib + tests + runner).
+    build_cmd = ["cmake", "--build", str(lib_build)]
     if package:
-        raise SystemExit("[todo] jsc packaging (xcframework) is J2")
+        build_cmd += ["--target", "napi_jsc_static"]
+    run(build_cmd)
+
+    jsc_out = lib_build / "src" / "jsc"
+    print(f"\n[done] artifacts -> {jsc_out}")
+    if package:
+        # Per-arch static CMake package (libnapi_jsc.a). The .xcframework (mac +
+        # ios device + ios simulator) is assembled afterward by package_apple.py
+        # --target=xcframework once every slice has been built — mirroring how the
+        # V8 release flow calls package_apple separately from the per-arch builds.
+        from importlib import import_module
+        import_module("package_cmake").package(
+            engine="jsc", platform=platform, arch=arch, config=config)
 
 
 # ---------------------------------------------------------------------------

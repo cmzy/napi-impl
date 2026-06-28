@@ -66,6 +66,20 @@ ENGINES = {
         "subdir": ("src", "hermes"),
         "v8_headers": False,  # only napi_v8/embedding.h
     },
+    # JSC is Apple-only and shipped as a STATIC framework (binary = libnapi_jsc.a):
+    # iOS free-team apps have no dynamic-code entitlement and static linking is
+    # preferred. Ships the full napi_v8/ surface (JSC supports inspector + SAB).
+    # Distributed as an .xcframework (mac + ios device + ios simulator slices) —
+    # device and simulator arm64 cannot share one flat framework, which is exactly
+    # what xcframework solves.
+    "jsc": {
+        "dylib": "libnapi_jsc.a",
+        "fw": "NapiJSC",
+        "bundle_id": "com.napi.jsc",
+        "subdir": ("src", "jsc"),
+        "v8_headers": True,
+        "static": True,
+    },
 }
 
 INFO_PLIST_TMPL = """\
@@ -153,9 +167,12 @@ def make_framework(cfg: dict, binary: Path, target_dir: Path,
         shutil.rmtree(fw)
     fw.mkdir(parents=True)
     shutil.copy2(binary, fw / fw_name)
-    subprocess.run(["install_name_tool", "-id",
-                    f"@rpath/{fw_name}.framework/{fw_name}", str(fw / fw_name)],
-                   check=False)
+    # A static framework's binary is an ar archive, not a Mach-O dylib, so it has
+    # no install name to rewrite (skip install_name_tool — it would error).
+    if not cfg.get("static"):
+        subprocess.run(["install_name_tool", "-id",
+                        f"@rpath/{fw_name}.framework/{fw_name}", str(fw / fw_name)],
+                       check=False)
     headers = fw / "Headers"
     headers.mkdir()
     copy_headers(cfg, headers)
@@ -168,55 +185,86 @@ def make_framework(cfg: dict, binary: Path, target_dir: Path,
     return fw
 
 
+# Per-target slices (build.py platform/arch) + minimum OS. Device and simulator
+# arm64 are distinct platforms (same arch) → must be separate xcframework slices.
+TARGET_SLICES = {
+    "macos":   ([("mac", "arm64"), ("mac", "x86_64")], "11.0"),
+    "ios":     ([("ios", "arm64")], "13.0"),                      # device
+    "ios_sim": ([("ios_sim", "arm64"), ("ios_sim", "x86_64")], "13.0"),
+}
+
+
+def build_one(cfg: dict, engine: str, target: str, version: str, work: Path) -> Path:
+    """Build a single flat .framework for one target (macOS/iOS/iOS-sim)."""
+    slices, minos = TARGET_SLICES[target]
+    bins = collect(cfg, engine, slices)
+    if not bins:
+        sys.exit(f"[error] no {target} {cfg['dylib']} found; build {target} first")
+    binary = lipo(work / f"{target}.bin", bins)
+    sub = work / target
+    sub.mkdir(parents=True, exist_ok=True)
+    fw = make_framework(cfg, binary, sub, minos=minos, version=version)
+    plats = [f"{plat}/{arch}" for plat, arch in slices
+             if (build_dir(cfg, engine, plat, arch) / cfg["dylib"]).exists()]
+    run([sys.executable, str(ROOT / "scripts" / "gen_build_info.py"),
+         "--platforms", *plats, "--version", version,
+         "--out", str(fw / "BUILD_INFO.md")])
+    return fw
+
+
+def report_size(dest: Path):
+    size = sum(p.stat().st_size for p in dest.rglob("*") if p.is_file())
+    print(f"\n[done] {dest}")
+    print(f"  size: {size / 1024 / 1024:.1f} MB")
+
+
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--engine", default="v8", choices=["v8", "hermes"])
-    ap.add_argument("--target", required=True, choices=["macos", "ios"])
+    ap.add_argument("--engine", default="v8", choices=["v8", "hermes", "jsc"])
+    ap.add_argument("--target", required=True,
+                    choices=["macos", "ios", "ios_sim", "xcframework"])
     ap.add_argument("--version", default="1.0.0")
     args = ap.parse_args()
 
     engine = args.engine
     cfg = ENGINES[engine]
-
     DIST.mkdir(parents=True, exist_ok=True)
     work = DIST / f".{engine}_{args.target}_work"
     if work.exists():
         shutil.rmtree(work)
     work.mkdir(parents=True)
 
-    if args.target == "macos":
-        bins = collect(cfg, engine, [("mac", "arm64"), ("mac", "x86_64")])
-        if not bins:
-            sys.exit(f"[error] no mac {cfg['dylib']} found; build mac first")
-        binary = lipo(work / "macos.bin", bins)
-        minos = "11.0"
-        platforms_for_info = [f"mac/{p.parents[len(cfg['subdir'])].name.split('-')[2]}"
-                              for p in bins]
-    else:  # ios
-        bins = collect(cfg, engine, [("ios", "arm64")])
-        if not bins:
-            sys.exit(f"[error] no ios device {cfg['dylib']} found; build ios arm64 first")
-        binary = lipo(work / "ios.bin", bins)
-        minos = "13.0"
-        platforms_for_info = ["ios/arm64"]
+    if args.target == "xcframework":
+        # Combine macOS + iOS device + iOS simulator static frameworks into one
+        # .xcframework (the only correct way to ship device+sim arm64 together).
+        if not cfg.get("static"):
+            sys.exit(f"[error] xcframework target is for static engines (jsc), not {engine}")
+        sub_fws = []
+        for tgt in ("macos", "ios", "ios_sim"):
+            slices, _ = TARGET_SLICES[tgt]
+            if collect(cfg, engine, slices):  # only slices that were built
+                sub_fws.append(build_one(cfg, engine, tgt, args.version, work))
+        if not sub_fws:
+            sys.exit("[error] no slices built; build mac/ios/ios_sim first")
+        dest = DIST / f"{cfg['fw']}.xcframework"
+        if dest.exists():
+            shutil.rmtree(dest)
+        xc = ["xcodebuild", "-create-xcframework"]
+        for fw in sub_fws:
+            xc += ["-framework", str(fw)]
+        xc += ["-output", str(dest)]
+        run(xc)
+        shutil.rmtree(work, ignore_errors=True)
+        report_size(dest)
+        return
 
-    fw = make_framework(cfg, binary, work, minos=minos, version=args.version)
-    # Move/rename to dist with target suffix.
+    fw = build_one(cfg, engine, args.target, args.version, work)
     dest = DIST / f"{cfg['fw']}-{args.target}.framework"
     if dest.exists():
         shutil.rmtree(dest)
     shutil.move(str(fw), str(dest))
-
-    run([sys.executable, str(ROOT / "scripts" / "gen_build_info.py"),
-         "--platforms", *platforms_for_info,
-         "--version", args.version,
-         "--out", str(dest / "BUILD_INFO.md")])
-
     shutil.rmtree(work, ignore_errors=True)
-
-    size = sum(p.stat().st_size for p in dest.rglob("*") if p.is_file())
-    print(f"\n[done] {dest}")
-    print(f"  size: {size / 1024 / 1024:.1f} MB")
+    report_size(dest)
 
 
 if __name__ == "__main__":

@@ -20,6 +20,20 @@ set_target_properties(napi_jsc PROPERTIES OUTPUT_NAME napi_jsc)
 
 target_link_libraries(napi_jsc PRIVATE napi_flags napi_common JSC::JSC)
 
+# ---- static library (Apple distribution: .framework + cmake static package) ----
+# Apple consumers (notably the AmeCanvas engine on iOS, where a free-team app has
+# no JIT/dynamic-code entitlement and prefers static linking) want libnapi_jsc.a,
+# not the dylib. Same sources/flags; export discipline is preserved automatically
+# because NAPI_EXTERN is __attribute__((visibility("default"))) in the public
+# headers — so even under napi_flags' -fvisibility=hidden the archive keeps only
+# napi_*/node_api_* visible (internals hidden), and the consumer's final link
+# re-exports exactly those. No -exported_symbols_list (that's a dylib link step).
+# `--target napi_jsc_static` builds just the archive; the framework/cmake-package
+# scripts consume out/build/.../src/jsc/libnapi_jsc.a.
+add_library(napi_jsc_static STATIC ${JSC_SOURCES_RAW})
+set_target_properties(napi_jsc_static PROPERTIES OUTPUT_NAME napi_jsc)
+target_link_libraries(napi_jsc_static PRIVATE napi_flags napi_common JSC::JSC)
+
 # Export only the canonical napi_*/node_api_* surface; hide our internals
 # (-fvisibility=hidden from napi_flags handles the rest). The list omits the
 # V8-only inspector/SharedArrayBuffer extensions, same as the Hermes list.

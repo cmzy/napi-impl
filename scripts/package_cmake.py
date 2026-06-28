@@ -38,10 +38,10 @@ endif()
 
 get_filename_component(_{base}_root "${{CMAKE_CURRENT_LIST_DIR}}/.." ABSOLUTE)
 
-add_library({base}::{base} SHARED IMPORTED)
+add_library({base}::{base} {lib_kind} IMPORTED)
 set_target_properties({base}::{base} PROPERTIES
   IMPORTED_LOCATION "${{_{base}_root}}/lib/{lib_runtime}"
-  INTERFACE_INCLUDE_DIRECTORIES "${{_{base}_root}}/include"{import_lib}
+  INTERFACE_INCLUDE_DIRECTORIES "${{_{base}_root}}/include"{import_lib}{interface_link}
 )
 
 set({base}_VERSION {version})
@@ -79,6 +79,25 @@ PLATFORM_LIB = {
         "ios":     ("libnapi_hermes.dylib", None),
         "windows": ("napi_hermes.dll",      "napi_hermes.lib"),
     },
+    # JSC is Apple-only and shipped as a STATIC archive (libnapi_jsc.a): a free-team
+    # iOS app has no dynamic-code entitlement, and consumers prefer static linking.
+    "jsc": {
+        "mac":     ("libnapi_jsc.a", None),
+        "ios":     ("libnapi_jsc.a", None),
+        "ios_sim": ("libnapi_jsc.a", None),
+    },
+}
+
+# Per-engine packaging traits: IMPORTED library kind, whether the full napi_v8/
+# header surface (inspector + SharedArrayBuffer) ships, and any extra interface
+# link the consumer must add. JSC is a STATIC archive that references Apple's
+# system JavaScriptCore.framework, so the consumer's final link must add it
+# (a dylib bakes the dependency in; a static archive cannot).
+ENGINE_META = {
+    "v8":     {"kind": "SHARED", "v8_headers": True,  "interface_link": ""},
+    "hermes": {"kind": "SHARED", "v8_headers": False, "interface_link": ""},
+    "jsc":    {"kind": "STATIC", "v8_headers": True,
+               "interface_link": '\n  INTERFACE_LINK_LIBRARIES "-framework JavaScriptCore"'},
 }
 
 
@@ -87,6 +106,9 @@ def _src_build(engine: str, platform: str, arch: str, config: str) -> Path:
     if engine == "hermes":
         # libnapi_hermes lands in the CMake target's subdir.
         return base / f"hermes-{platform}-{arch}-{config}" / "src" / "hermes"
+    if engine == "jsc":
+        # libnapi_jsc.a lands in the CMake target's subdir.
+        return base / f"jsc-{platform}-{arch}-{config}" / "src" / "jsc"
     return base / f"v8-{platform}-{arch}-{config}"
 
 
@@ -94,6 +116,7 @@ def package(engine: str, platform: str, arch: str, config: str = "release",
             version: str = "1.0.0") -> Path:
     base = f"napi_{engine}"
     runtime, import_lib = PLATFORM_LIB[engine][platform]
+    meta = ENGINE_META[engine]
 
     src_build = _src_build(engine, platform, arch, config)
     if not (src_build / runtime).exists():
@@ -112,7 +135,8 @@ def package(engine: str, platform: str, arch: str, config: str = "release",
     shutil.copytree(ROOT / "include" / "napi", pkg / "include" / "napi",
                     dirs_exist_ok=True)
     (pkg / "include" / "napi_v8").mkdir(exist_ok=True)
-    if engine == "v8":
+    if meta["v8_headers"]:
+        # v8 + jsc both ship the full embedding + inspector + sab surface.
         shutil.copytree(ROOT / "include" / "napi_v8", pkg / "include" / "napi_v8",
                         dirs_exist_ok=True)
     else:
@@ -130,8 +154,9 @@ def package(engine: str, platform: str, arch: str, config: str = "release",
             f'\n  IMPORTED_IMPLIB "${{_{base}_root}}/lib/{import_lib}"')
 
     (pkg / "cmake" / f"{base}-config.cmake").write_text(
-        CONFIG_TMPL.format(base=base, lib_runtime=runtime,
-                           import_lib=import_lib_prop, version=version))
+        CONFIG_TMPL.format(base=base, lib_runtime=runtime, lib_kind=meta["kind"],
+                           import_lib=import_lib_prop,
+                           interface_link=meta["interface_link"], version=version))
     (pkg / "cmake" / f"{base}-config-version.cmake").write_text(
         VERSION_TMPL.format(version=version))
 
@@ -166,7 +191,7 @@ def package(engine: str, platform: str, arch: str, config: str = "release",
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--engine", default="v8", choices=["v8", "hermes"])
+    ap.add_argument("--engine", default="v8", choices=["v8", "hermes", "jsc"])
     ap.add_argument("--platform", required=True)
     ap.add_argument("--arch", required=True)
     ap.add_argument("--config", default="release")
