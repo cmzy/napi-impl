@@ -93,6 +93,37 @@ JSObjectRef MakeFunction(napi_env env, napi_callback cb, void* data) {  // AME-J
     return fn;
 }
 
+// Install Ctor[Symbol.hasInstance] implementing OrdinaryHasInstance, so
+// `x instanceof Ctor` works under JSC. JSC's `instanceof` operator does NOT fall
+// back to OrdinaryHasInstance for a callable custom-JSClass constructor: such a
+// ctor is `typeof === "function"` with a correct `.prototype` chain, yet because
+// it doesn't inherit Function.prototype[@@hasInstance] (its [[Prototype]] is
+// Object.prototype) and has no own @@hasInstance, JSC's instanceof returns false.
+// Defining an own @@hasInstance forces the spec's instOfHandler path. (Reparenting
+// the ctor to Function.prototype instead is wrong: Function.prototype.name is
+// non-writable, which then blanks the class's own name.)  AME-JSC-HASINSTANCE-FIX
+void InstallHasInstance(JSContextRef ctx, JSObjectRef ctor) {
+    JSValueRef symCtor = JSObjectGetProperty(ctx, JSContextGetGlobalObject(ctx), JSStr("Symbol"), nullptr);
+    if (!JSValueIsObject(ctx, symCtor))
+        return;
+    JSValueRef sym = JSObjectGetProperty(ctx, JSValueToObject(ctx, symCtor, nullptr), JSStr("hasInstance"), nullptr);
+    if (sym == nullptr || JSValueGetType(ctx, sym) != kJSTypeSymbol)
+        return;
+    JSStringRef src = JSStringCreateWithUTF8CString(
+        "(function(O){if(O===null||(typeof O!=='object'&&typeof O!=='function'))return false;"
+        "var P=this.prototype;if(P===null||typeof P!=='object')return false;"
+        "var p=Object.getPrototypeOf(O);while(p!==null){if(p===P)return true;p=Object.getPrototypeOf(p);}"
+        "return false;})");
+    JSValueRef fn = JSEvaluateScript(ctx, src, nullptr, nullptr, 0, nullptr);
+    JSStringRelease(src);
+    if (!JSValueIsObject(ctx, fn))
+        return;
+    JSObjectSetPropertyForKey(ctx, ctor, sym, fn,
+                             kJSPropertyAttributeReadOnly | kJSPropertyAttributeDontEnum |
+                                     kJSPropertyAttributeDontDelete,
+                             nullptr);
+}
+
 JSPropertyAttributes ToJSAttrs(napi_property_attributes a) {
     JSPropertyAttributes out = kJSPropertyAttributeNone;
     if (!(a & napi_writable)) out |= kJSPropertyAttributeReadOnly;
@@ -614,6 +645,7 @@ napi_status NAPI_CDECL napi_define_class(napi_env env, const char* utf8name, siz
         JSObjectSetProperty(ctx, ctor, JSStr("name"), JSValueMakeString(ctx, JSStr(name.c_str())),
                             kJSPropertyAttributeReadOnly | kJSPropertyAttributeDontEnum, nullptr);
     }
+    InstallHasInstance(ctx, ctor);  // make `x instanceof Ctor` work under JSC (AME-JSC-HASINSTANCE-FIX)
 
     for (size_t i = 0; i < prop_count; ++i) {
         const napi_property_descriptor* p = &props[i];
