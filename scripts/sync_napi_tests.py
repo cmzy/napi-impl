@@ -25,6 +25,56 @@ DEFAULT_TAG = "v22.11.0"   # Node 22 LTS; bump as needed
 # Subpath inside nodejs/node to copy.
 SUBPATH = "test/js-native-api"
 
+# A handful of upstream tests hard-code V8's *exact* engine error STRING for an
+# assignment that fails at the JS-engine level (assign to a read-only / getter-only
+# property, add to a non-extensible object). The Node-API *behavior* is identical
+# on every engine — a TypeError is thrown and the property is unchanged — but the
+# message text is the engine's, not part of the Node-API contract (JSC says
+# "Attempted to assign to readonly property." / "...not extensible"; V8 says
+# "Cannot assign to read only property 'X' of object '#<Y>'", etc.). Running this
+# V8-authored suite on JSC, those 4 cases fail purely on message wording. We relax
+# each such regex to `/^TypeError:/` — still asserting the observable behavior (a
+# TypeError is thrown) but engine-agnostic. The relaxed regex also matches V8, so
+# the suite stays correct on every backend. If an upstream bump renames these
+# literals, the patch warns (so it doesn't silently rot).
+ENGINE_AGNOSTIC = "/^TypeError:/"
+ENGINE_AGNOSTIC_ERROR_PATCHES = {
+    "test_constructor/test.js": [
+        "/^TypeError: Cannot set property .* of #<.*> which has only a getter$/",
+        "/^TypeError: Cannot assign to read only property 'readonlyValue' of object '#<MyObject>'$/",
+    ],
+    "test_properties/test.js": [
+        "/^TypeError: Cannot assign to read only property '.*' of object '#<Object>'$/",
+        "/^TypeError: Cannot set property .* of #<Object> which has only a getter$/",
+    ],
+    "6_object_wrap/test.js": [
+        "/^TypeError: Cannot set property .* of #<.*> which has only a getter$/",
+    ],
+    "test_object/test.js": [
+        "/Cannot add property w, object is not extensible/",
+        "/Cannot assign to read only property 'x' of object '#<Object>/",
+        "/Cannot delete property 'x' of #<Object>/",  # JSC: "Unable to delete property."
+    ],
+}
+
+
+def relax_engine_specific_errors(target: Path):
+    """Replace V8-exact error-string regexes with engine-agnostic /^TypeError:/."""
+    for rel, literals in ENGINE_AGNOSTIC_ERROR_PATCHES.items():
+        path = target / rel
+        if not path.exists():
+            print(f"[warn] engine-agnostic patch: {rel} not found", file=sys.stderr)
+            continue
+        text = path.read_text()
+        for lit in literals:
+            if lit not in text:
+                print(f"[warn] engine-agnostic patch: literal not found in {rel}:\n"
+                      f"        {lit}", file=sys.stderr)
+                continue
+            text = text.replace(lit, ENGINE_AGNOSTIC)
+        path.write_text(text)
+    print("[ok] relaxed V8-specific engine error-string assertions to /^TypeError:/")
+
 
 def run(cmd, **kw):
     print(f"$ {' '.join(str(c) for c in cmd)}", flush=True)
@@ -65,6 +115,7 @@ def main():
             shutil.rmtree(TARGET)
         shutil.copytree(src, TARGET)
 
+    relax_engine_specific_errors(TARGET)
     stamp.write_text(args.tag + "\n")
     n = sum(1 for _ in TARGET.rglob("*.c")) + sum(1 for _ in TARGET.rglob("*.cc"))
     js = sum(1 for _ in TARGET.rglob("*.js"))

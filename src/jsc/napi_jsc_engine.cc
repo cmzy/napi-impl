@@ -125,12 +125,29 @@ napi_status NAPI_CDECL napi_create_env(napi_runtime runtime, napi_env* result) {
     return napi_ok;
 }
 
-napi_status NAPI_CDECL napi_destroy_env(napi_env env) {
+napi_status NAPI_CDECL napi_destroy_env(napi_env env) {  // AME-JSC-TEARDOWN-FIX
     if (env == nullptr)
         return napi_invalid_arg;
     auto* owner = static_cast<napi_runtime>(env->embed_owner);
-    if (owner != nullptr && owner->env == env)
-        owner->env = nullptr;
+    if (owner != nullptr) {
+        if (owner->env == env)
+            owner->env = nullptr;
+        // Drop the runtime's context-group ref *before* env_delete, exactly as
+        // napi_destroy_runtime does. Otherwise env_delete's JSGlobalContextRelease
+        // is NOT the last group ref (the runtime still holds one) → the VM does not
+        // tear down → the straggler wrap/external finalizers don't fire until the
+        // *later* napi_destroy_runtime releases the group, by which point `delete env`
+        // has already run → those finalizers deref a freed env (UAF on
+        // finalizer_mu → "mutex lock failed: Invalid argument" abort). Releasing the
+        // group here makes env_delete drop the last ref, so the VM tears down and
+        // drains finalizers while the env is still alive. Whichever of
+        // destroy_env / destroy_runtime runs first releases the group; the other
+        // sees a null group and skips. See docs/JSC_INTEGRATION.md.
+        if (owner->group != nullptr) {
+            JSContextGroupRelease(owner->group);
+            owner->group = nullptr;
+        }
+    }
     napi_jsc_env_delete(env);
     return napi_ok;
 }

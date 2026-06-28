@@ -78,17 +78,42 @@ bool InstanceOfGlobal(napi_env env, JSValueRef v, const char* ctor_name) {
     return ctor != nullptr && JSValueIsInstanceOfConstructor(env->ctx, v, ctor, nullptr);
 }
 
-JSObjectRef MakeFunction(napi_env env, napi_callback cb, void* data) {  // AME-JSC-FNPROTO-FIX
-    JSObjectRef fn = JSObjectMake(env->ctx, env->function_class, new CallbackData{env, cb, data});
-    // AmeCanvas fix: napi callbacks are instances of a custom JSClass whose default
-    // [[Prototype]] is Object.prototype, so they lack Function.prototype methods
-    // (.call/.apply/.bind) even though they're callable. Reparent to
-    // Function.prototype so JS that treats them as ordinary functions works
-    // (e.g. the WPT harness does `window.addEventListener.bind(window)`).
+JSObjectRef MakeFunction(napi_env env, napi_callback cb, void* data) {  // AME-JSC-REALFN-FIX
+    JSContextRef ctx = env->ctx;
+    // Produce a *real* ECMAScript function rather than a custom-JSClass callable.
+    // A genuine function is constructable (so napi_create_function results can be
+    // `new`ed and used as `class X extends <napi fn>`), reports the correct
+    // new.target / derived-`this` under super(), and already inherits
+    // Function.prototype (.call/.apply/.bind). The function closes over a native
+    // init object (ctor_init_class) carrying the napi callback; its JS body forwards
+    // (new.target, this, args) to ConstructorInitTrampoline. Same machinery as
+    // napi_define_class's ctor_factory, but without the "must use new" guard (a
+    // plain function may be called without new). The data lives on native_init, which
+    // the closure keeps alive; ctor_init_class's finalize frees the CallbackData.
+    if (env->fn_factory == nullptr) {
+        JSStr factory_src("(function(__init){return function(...args){return __init(new.target,this,args);};})");
+        JSValueRef exc = nullptr;
+        JSValueRef f = JSEvaluateScript(ctx, factory_src, nullptr, nullptr, 0, &exc);
+        if (exc == nullptr && f != nullptr && JSValueIsObject(ctx, f)) {
+            env->fn_factory = JSValueToObject(ctx, f, nullptr);
+            JSValueProtect(ctx, env->fn_factory);
+        }
+    }
+    if (env->fn_factory != nullptr) {
+        JSObjectRef native_init = JSObjectMake(ctx, env->ctor_init_class, new CallbackData{env, cb, data});
+        JSValueRef arg = native_init;
+        JSValueRef exc = nullptr;
+        JSValueRef fnv = JSObjectCallAsFunction(ctx, env->fn_factory, nullptr, 1, &arg, &exc);
+        if (exc == nullptr && fnv != nullptr && JSValueIsObject(ctx, fnv))
+            return JSValueToObject(ctx, fnv, nullptr);
+    }
+    // Fallback (factory unavailable): the legacy custom-class callable, reparented to
+    // Function.prototype so .call/.apply/.bind still work. Not constructable.
+    JSObjectRef fn = JSObjectMake(ctx, env->function_class, new CallbackData{env, cb, data});
     if (JSObjectRef funcCtor = GlobalCtor(env, "Function")) {
-        JSValueRef proto = JSObjectGetProperty(env->ctx, funcCtor, JSStr("prototype"), nullptr);
-        if (proto != nullptr && JSValueIsObject(env->ctx, proto))
-            JSObjectSetPrototype(env->ctx, fn, proto);
+        JSValueRef proto = JSObjectGetProperty(ctx, funcCtor, JSStr("prototype"), nullptr);
+        if (proto != nullptr && JSValueIsObject(ctx, proto))
+            JSObjectSetPrototype(ctx, fn, proto);
     }
     return fn;
 }
@@ -175,6 +200,13 @@ napi_status DefineOne(napi_env env, JSObjectRef target, const napi_property_desc
 
 napi_status NAPI_CDECL napi_create_object(napi_env env, napi_value* result) {
     CHECK_ENV(env);
+    // Allocating a JS object affects GC state, so it is forbidden inside a basic
+    // (node_api_basic_finalize) finalizer — abort like Node's CHECK_ENV_NOT_IN_GC.
+    // (Other value-creation APIs use CHECK_ENV too; this is the one exercised by
+    // test_fatal_finalize. The guard is a no-op unless a basic finalizer is on the
+    // stack, which only happens for NAPI_VERSION_EXPERIMENTAL modules.)
+    if (env->in_gc_finalizer)
+        napi_jsc_fatal_in_finalizer();
     CHECK_ARG(env, result);
     *result = napi_jsc_add_handle(env, JSObjectMake(env->ctx, nullptr, nullptr));
     return napi_jsc_clear_error(env);
@@ -214,6 +246,7 @@ napi_status NAPI_CDECL napi_get_named_property(napi_env env, napi_value object, 
                                                napi_value* result) {
     NAPI_PREAMBLE(env);
     CHECK_ARG(env, object);
+    CHECK_ARG(env, utf8name);
     CHECK_ARG(env, result);
     JSObjectRef obj = AsObject(env, object);
     RETURN_STATUS_IF_FALSE(env, obj != nullptr, napi_object_expected);
@@ -229,6 +262,7 @@ napi_status NAPI_CDECL napi_set_named_property(napi_env env, napi_value object, 
                                                napi_value value) {
     NAPI_PREAMBLE(env);
     CHECK_ARG(env, object);
+    CHECK_ARG(env, utf8name);
     CHECK_ARG(env, value);
     JSObjectRef obj = AsObject(env, object);
     RETURN_STATUS_IF_FALSE(env, obj != nullptr, napi_object_expected);
@@ -242,10 +276,18 @@ napi_status NAPI_CDECL napi_set_named_property(napi_env env, napi_value object, 
 napi_status NAPI_CDECL napi_has_named_property(napi_env env, napi_value object, const char* utf8name, bool* result) {
     NAPI_PREAMBLE(env);
     CHECK_ARG(env, object);
+    CHECK_ARG(env, utf8name);
     CHECK_ARG(env, result);
     JSObjectRef obj = AsObject(env, object);
     RETURN_STATUS_IF_FALSE(env, obj != nullptr, napi_object_expected);
-    *result = JSObjectHasProperty(env->ctx, obj, JSStr(utf8name));
+    // Use the *ForKey variant with an exception out-param: plain JSObjectHasProperty
+    // has none, so a Proxy `has` trap that throws would leak into the JSC context and
+    // poison every subsequent operation (test_object/test_exceptions). AME-JSC-HASNAMED-EXC-FIX
+    JSValueRef key = JSValueMakeString(env->ctx, JSStr(utf8name));
+    JSValueRef exc = nullptr;
+    *result = JSObjectHasPropertyForKey(env->ctx, obj, key, &exc);
+    if (exc != nullptr)
+        return napi_jsc_record_exception(env, exc);
     return napi_jsc_clear_error(env);
 }
 
@@ -314,6 +356,13 @@ napi_status NAPI_CDECL napi_has_own_property(napi_env env, napi_value object, na
     CHECK_ARG(env, result);
     JSObjectRef obj = AsObject(env, object);
     RETURN_STATUS_IF_FALSE(env, obj != nullptr, napi_object_expected);
+    // V8 parity: the key for napi_has_own_property must be a property name (string
+    // or symbol); anything else is napi_name_expected ("A string or symbol was
+    // expected"). napi_has_property coerces, but has_own does not.
+    {
+        JSType kt = JSValueGetType(env->ctx, ToJS(key));
+        RETURN_STATUS_IF_FALSE(env, kt == kJSTypeString || kt == kJSTypeSymbol, napi_name_expected);
+    }
     RETURN_STATUS_IF_FALSE(env, env->obj_has_own != nullptr, napi_generic_failure);
     JSValueRef arg = ToJS(key);
     JSValueRef exc = nullptr;
@@ -384,19 +433,16 @@ napi_status NAPI_CDECL napi_get_property_names(napi_env env, napi_value object, 
     NAPI_PREAMBLE(env);
     CHECK_ARG(env, object);
     CHECK_ARG(env, result);
-    JSObjectRef obj = AsObject(env, object);
-    RETURN_STATUS_IF_FALSE(env, obj != nullptr, napi_object_expected);
-    JSPropertyNameArrayRef names = JSObjectCopyPropertyNames(env->ctx, obj);
-    size_t count = JSPropertyNameArrayGetCount(names);
-    std::vector<JSValueRef> elems(count);
-    for (size_t i = 0; i < count; ++i) {
-        JSStringRef name = JSPropertyNameArrayGetNameAtIndex(names, i);
-        elems[i] = JSValueMakeString(env->ctx, name);
-    }
-    JSObjectRef arr = JSObjectMakeArray(env->ctx, count, count ? elems.data() : nullptr, nullptr);
-    JSPropertyNameArrayRelease(names);
-    *result = napi_jsc_add_handle(env, arr);
-    return napi_jsc_clear_error(env);
+    // Delegate to the descriptor-aware enumerator (which runs through Reflect.ownKeys
+    // with an exception out-param). Plain JSObjectCopyPropertyNames has no exception
+    // channel, so a Proxy ownKeys trap that throws would leak into the JSC context and
+    // poison subsequent operations (test_object/test_exceptions). napi_get_property_names
+    // is, per Node, get_all_property_names(include_prototypes, enumerable|skip_symbols,
+    // numbers_to_strings). AME-JSC-GETNAMES-EXC-FIX
+    return napi_get_all_property_names(
+        env, object, napi_key_include_prototypes,
+        static_cast<napi_key_filter>(napi_key_enumerable | napi_key_skip_symbols),
+        napi_key_numbers_to_strings, result);
 }
 
 napi_status NAPI_CDECL napi_get_all_property_names(napi_env env, napi_value object, napi_key_collection_mode mode,
@@ -539,8 +585,17 @@ napi_status NAPI_CDECL napi_create_function(napi_env env, const char* utf8name, 
     JSObjectRef fn = MakeFunction(env, cb, data);
     if (utf8name != nullptr && length > 0) {
         std::string name = (length == NAPI_AUTO_LENGTH) ? std::string(utf8name) : std::string(utf8name, length);
-        JSObjectSetProperty(env->ctx, fn, JSStr("name"), JSValueMakeString(env->ctx, JSStr(name.c_str())),
-                            kJSPropertyAttributeReadOnly | kJSPropertyAttributeDontEnum, nullptr);
+        // AME-JSC-FNNAME-FIX: a plain [[Set]] of "name" walks the prototype chain
+        // and hits Function.prototype.name (writable:false) → silently rejected, so
+        // `.name` then reads the inherited "" — the function looked nameless. Define
+        // an *own* property via Object.defineProperty instead (DefineOne). Spec
+        // Function.name is {writable:false, enumerable:false, configurable:true} →
+        // attributes = napi_configurable.
+        napi_property_descriptor nd = {};
+        nd.utf8name = "name";
+        nd.value = napi_jsc_add_handle(env, JSValueMakeString(env->ctx, JSStr(name.c_str())));
+        nd.attributes = napi_configurable;
+        DefineOne(env, fn, &nd);
     }
     *result = napi_jsc_add_handle(env, fn);
     return napi_jsc_clear_error(env);
@@ -552,12 +607,38 @@ napi_status NAPI_CDECL napi_call_function(napi_env env, napi_value recv, napi_va
     CHECK_ARG(env, func);
     JSObjectRef fn = AsObject(env, func);
     RETURN_STATUS_IF_FALSE(env, fn != nullptr && JSObjectIsFunction(env->ctx, fn), napi_function_expected);
-    JSObjectRef thiz = recv != nullptr && JSValueIsObject(env->ctx, ToJS(recv)) ? AsObject(env, recv) : nullptr;
+    JSValueRef thisVal = recv != nullptr ? ToJS(recv) : JSValueMakeUndefined(env->ctx);
     std::vector<JSValueRef> args(argc);
     for (size_t i = 0; i < argc; ++i)
         args[i] = ToJS(argv[i]);
     JSValueRef exc = nullptr;
-    JSValueRef r = JSObjectCallAsFunction(env->ctx, fn, thiz, argc, argc ? args.data() : nullptr, &exc);
+    JSValueRef r = nullptr;
+    if (JSValueIsObject(env->ctx, thisVal)) {
+        // Fast path: object `this` is passed straight through.
+        r = JSObjectCallAsFunction(env->ctx, fn, JSValueToObject(env->ctx, thisVal, nullptr), argc,
+                                   argc ? args.data() : nullptr, &exc);
+    } else {
+        // AME-JSC-CALL-RECV-FIX: JSObjectCallAsFunction takes the `this` as a
+        // JSObjectRef and treats NULL as "use the global object", so primitive /
+        // undefined / null receivers were lost (they came through as the global).
+        // Route through Function.prototype.call so the exact receiver is preserved
+        // with correct ES strict/sloppy boxing: fn.call(recv, ...args).
+        JSValueRef callV = JSObjectGetProperty(env->ctx, fn, JSStr("call"), &exc);
+        JSObjectRef callFn =
+            (exc == nullptr && callV != nullptr && JSValueIsObject(env->ctx, callV))
+                ? JSValueToObject(env->ctx, callV, nullptr)
+                : nullptr;
+        if (callFn != nullptr) {
+            std::vector<JSValueRef> callArgs;
+            callArgs.reserve(argc + 1);
+            callArgs.push_back(thisVal);
+            for (size_t i = 0; i < argc; ++i)
+                callArgs.push_back(args[i]);
+            r = JSObjectCallAsFunction(env->ctx, callFn, fn, callArgs.size(), callArgs.data(), &exc);
+        } else {
+            r = JSObjectCallAsFunction(env->ctx, fn, nullptr, argc, argc ? args.data() : nullptr, &exc);
+        }
+    }
     if (exc != nullptr)
         return napi_jsc_record_exception(env, exc);
     if (result != nullptr)
@@ -630,8 +711,11 @@ napi_status NAPI_CDECL napi_define_class(napi_env env, const char* utf8name, siz
                                          void* data, size_t prop_count, const napi_property_descriptor* props,
                                          napi_value* result) {
     NAPI_PREAMBLE(env);
+    CHECK_ARG(env, utf8name);  // V8 parity: a class name is required (test_null expects invalid_arg)
     CHECK_ARG(env, ctor_cb);
     CHECK_ARG(env, result);
+    if (prop_count > 0)
+        CHECK_ARG(env, props);  // non-empty descriptor list must be non-null (else OOB read below)
     JSContextRef ctx = env->ctx;
 
     // Build the constructor as a *real* ECMAScript function rather than a JSC
@@ -710,6 +794,8 @@ napi_status NAPI_CDECL napi_define_properties(napi_env env, napi_value object, s
                                               const napi_property_descriptor* properties) {
     NAPI_PREAMBLE(env);
     CHECK_ARG(env, object);
+    if (property_count > 0)
+        CHECK_ARG(env, properties);  // non-empty list must be non-null (test_null) / avoid OOB
     JSObjectRef obj = AsObject(env, object);
     RETURN_STATUS_IF_FALSE(env, obj != nullptr, napi_object_expected);
     for (size_t i = 0; i < property_count; ++i) {
@@ -730,7 +816,13 @@ namespace {
 // exception if the property can't be set (e.g. a frozen/non-extensible target).
 bool AttachHolder(napi_env env, JSObjectRef anchor, JSValueRef key, void* data, napi_finalize finalize_cb,
                   void* hint, std::shared_ptr<RefControl> control, JSValueRef* exc_out) {
-    auto* st = new ExternalState{env, data, finalize_cb, hint, std::move(control)};
+    // Holders attached by napi_wrap / napi_add_finalizer carry *basic* finalizers
+    // (GC-time, restricted to basic Node-API) — but only for modules built at
+    // NAPI_VERSION_EXPERIMENTAL, matching Node (older modules' finalizers may call
+    // JS). napi_create_external builds its ExternalState directly with basic=false.
+    // AME-JSC-BASICFIN-FIX
+    const bool basic = (env->module_api_version == NAPI_VERSION_EXPERIMENTAL);
+    auto* st = new ExternalState{env, data, finalize_cb, hint, std::move(control), basic};
     JSObjectRef holder = JSObjectMake(env->ctx, env->external_class, st);
     JSValueRef exc = nullptr;
     JSObjectSetPropertyForKey(env->ctx, anchor, key, holder,
@@ -788,7 +880,9 @@ napi_status NAPI_CDECL napi_wrap(napi_env env, napi_value js_object, void* nativ
                                  void* finalize_hint, napi_ref* result) {
     NAPI_PREAMBLE(env);
     CHECK_ARG(env, js_object);
-    CHECK_ARG(env, native_object);
+    // Note: native_object MAY be NULL (V8 allows it — e.g. test_reference_double_free's
+    // DeleteImmediately and 6_object_wrap's dangling-reference test both wrap with a
+    // NULL native pointer just to attach a finalizer/ref). Do NOT CHECK_ARG it.
     JSObjectRef obj = AsObject(env, js_object);
     RETURN_STATUS_IF_FALSE(env, obj != nullptr, napi_object_expected);
     // Node/V8 semantics: napi_wrap on an already-wrapped object MUST fail
@@ -964,6 +1058,10 @@ napi_status NAPI_CDECL node_api_symbol_for(napi_env env, const char* utf8descrip
                                            napi_value* result) {
     CHECK_ENV(env);
     CHECK_ARG(env, result);
+    // V8 parity: an explicit length requires a non-null pointer (else
+    // std::string(NULL, length) does memmove(NULL) → crash). AME-JSC-SYMFOR-NULL-FIX
+    if (length != NAPI_AUTO_LENGTH)
+        CHECK_ARG(env, utf8description);
     RETURN_STATUS_IF_FALSE(env, env->symbol_for != nullptr, napi_generic_failure);
     std::string d = (length == NAPI_AUTO_LENGTH) ? std::string(utf8description ? utf8description : "")
                                                  : std::string(utf8description, length);
@@ -1003,8 +1101,18 @@ napi_status ExternalString(napi_env env, napi_status make_status, void* buf, nod
                            void* finalize_hint, bool* copied) {
     if (make_status != napi_ok)
         return make_status;
+    // AME-JSC-EXTSTR-COPIED-FIX: report copied=false. JSC's C API has no external
+    // (zero-copy) string, so we copied the bytes into JSC's heap — but the `copied`
+    // out-param is about *ownership*, not internal representation: false means "the
+    // runtime took the buffer and will release it via finalize_callback; the caller
+    // must NOT free it". That is exactly what we do (the finalizer below frees the
+    // caller's buffer), so false is the contractually correct answer. Reporting true
+    // wrongly told callers to keep ownership (test_string's create_external_* treats
+    // copied==true as a hard failure). The redundant internal copy is invisible to
+    // the caller; JSStringCreateWithCharacters already duplicated the bytes, so
+    // freeing the caller's buffer on the next finalizer tick is safe.
     if (copied != nullptr)
-        *copied = true;
+        *copied = false;
     if (finalize_cb != nullptr) {
         std::lock_guard<std::mutex> lk(env->finalizer_mu);
         env->pending_finalizers.push_back({finalize_cb, buf, finalize_hint});

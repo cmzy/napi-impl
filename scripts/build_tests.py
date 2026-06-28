@@ -134,6 +134,18 @@ def build_one(name: str, sources, feature_dir: Path, libdir: Path,
         lib_link_name = "napi_v8"
     else:
         lib_link_name = "napi_v8"
+    # A test whose binding.gyp opts into NAPI_EXPERIMENTAL reports the experimental
+    # api version (node_api_module_get_api_version_v1) so the engine applies the
+    # node_api_basic_finalize GC-access restriction (test_fatal_finalize); others
+    # report a normal version. -DNAPI_EXPERIMENTAL stays on for all so experimental
+    # *declarations* compile everywhere — only the reported NAPI_VERSION gates.
+    napi_version = "10"
+    try:
+        gyp_text = (sources[0].parent / "binding.gyp").read_text()
+        if "NAPI_EXPERIMENTAL" in gyp_text:
+            napi_version = "2147483647"  # NAPI_VERSION_EXPERIMENTAL
+    except Exception:
+        pass
     cmd = [
         cxx,
         "-shared", "-fPIC", "-fvisibility=hidden",
@@ -142,7 +154,7 @@ def build_one(name: str, sources, feature_dir: Path, libdir: Path,
         f"-I{INCLUDE_NAPI}",             # for users including <napi/...>
         f"-I{TESTS}",
         "-DBUILDING_NODE_EXTENSION",
-        "-DNAPI_VERSION=10",
+        f"-DNAPI_VERSION={napi_version}",
         "-DNAPI_EXPERIMENTAL",
         f"-DNODE_GYP_MODULE_NAME={name}",
         "-O2",

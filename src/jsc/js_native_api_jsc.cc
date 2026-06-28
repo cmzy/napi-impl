@@ -10,6 +10,9 @@
 
 #include <climits>
 #include <cmath>
+#include <cstdio>
+#include <cstdlib>
+#include <limits>
 #include <string>
 
 #define NAPI_EXPERIMENTAL
@@ -32,7 +35,7 @@ const char* kErrorMessages[] = {
     "Invalid argument",                 // napi_invalid_arg
     "An object was expected",           // napi_object_expected
     "A string was expected",            // napi_string_expected
-    "A name was expected",              // napi_name_expected
+    "A string or symbol was expected",  // napi_name_expected (matches Node/V8 wording)
     "A function was expected",          // napi_function_expected
     "A number was expected",            // napi_number_expected
     "A boolean was expected",           // napi_boolean_expected
@@ -85,7 +88,7 @@ void ExternalFinalize(JSObjectRef obj) {
     }
     if (st->finalize_cb != nullptr && st->env != nullptr) {
         std::lock_guard<std::mutex> lk(st->env->finalizer_mu);
-        st->env->pending_finalizers.push_back({st->finalize_cb, st->data, st->finalize_hint});
+        st->env->pending_finalizers.push_back({st->finalize_cb, st->data, st->finalize_hint, st->basic});
     }
     delete st;
 }
@@ -105,18 +108,72 @@ void ForwardPendingException(napi_env env, JSValueRef* exception) {
     env->pending_exception = nullptr;
 }
 
+// AME-JSC-CBSCOPE-FIX: every native callback must run inside its own handle scope.
+// napi_get_cb_info (and most napi_* getters) protect each value via
+// napi_jsc_add_handle and stash it in the current scope; without a per-callback
+// scope those handles accrue in the *root* scope and stay JSValueProtect'd until
+// env teardown — so arguments (and anything derived) are never collected and
+// finalizers/weak refs never fire. Mirror Node/V8: push a scope on entry, release
+// its transient handles on exit, escaping the result to the parent scope so it
+// survives. RAII so early returns can't leak the scope.
+struct CallbackScope {
+    napi_env env;
+    napi_handle_scope__* s;
+    explicit CallbackScope(napi_env e) : env(e), s(new napi_handle_scope__()) {
+        env->scopes.push_back(s);
+        // V8 parity: each native callback enters with a clean error slate, so a
+        // stale napi_status from an earlier unrelated call doesn't leak into this
+        // one (test_general/testNapiStatus relies on the second call seeing napi_ok).
+        napi_jsc_clear_error(env);
+    }
+    // Close the scope, releasing every transient handle it accumulated. The
+    // callback's *return* value is deliberately NOT escaped/protected here: once a
+    // JSValueRef is handed back to JSC as a callback result, JSC roots it for the
+    // duration of the JS call (and thereafter the value's lifetime is governed by
+    // JS references — exactly as a V8 napi return value is). Escaping it into the
+    // parent scope instead would pin it for the parent's whole lifetime; since the
+    // test runner executes the entire script in the root scope, that pinned every
+    // napi-returned object until env teardown → such objects were never collected
+    // and their finalizers never fired. Callers compute their JSValueRef result
+    // before close() and return it immediately (no allocation in between, so no GC
+    // can reclaim it before JSC roots it). Tolerates a misbehaving callback that
+    // left extra scopes open by unwinding down to ours.
+    void close() {
+        while (env->scopes.size() > 1 && env->scopes.back() != s) {
+            auto* extra = env->scopes.back();
+            env->scopes.pop_back();
+            for (JSValueRef h : extra->handles)
+                JSValueUnprotect(env->ctx, h);
+            delete extra;
+        }
+        env->scopes.pop_back();
+        for (JSValueRef h : s->handles)
+            JSValueUnprotect(env->ctx, h);
+        delete s;
+        s = nullptr;
+    }
+    ~CallbackScope() {
+        if (s != nullptr)
+            close();
+    }
+};
+
 JSValueRef FunctionTrampoline(JSContextRef ctx, JSObjectRef function, JSObjectRef thisObject, size_t argc,
                               const JSValueRef argv[], JSValueRef* exception) {
     auto* d = static_cast<CallbackData*>(JSObjectGetPrivate(function));
     if (d == nullptr || d->cb == nullptr)
         return JSValueMakeUndefined(ctx);
     CbInfo info{ctx, thisObject, argc, argv, nullptr, d->data};
+    CallbackScope scope(d->env);
     napi_value ret = d->cb(d->env, reinterpret_cast<napi_callback_info>(&info));
     if (d->env->pending_exception != nullptr) {
+        scope.close();
         ForwardPendingException(d->env, exception);
         return JSValueMakeUndefined(ctx);
     }
-    return ret != nullptr ? ToJS(ret) : JSValueMakeUndefined(ctx);
+    JSValueRef out = ret != nullptr ? ToJS(ret) : JSValueMakeUndefined(ctx);
+    scope.close();
+    return out;
 }
 
 JSObjectRef ConstructorTrampoline(JSContextRef ctx, JSObjectRef constructor, size_t argc, const JSValueRef argv[],
@@ -129,14 +186,17 @@ JSObjectRef ConstructorTrampoline(JSContextRef ctx, JSObjectRef constructor, siz
     if (d == nullptr || d->cb == nullptr)
         return instance;
     CbInfo info{ctx, instance, argc, argv, constructor, d->data};
+    CallbackScope scope(d->env);
     napi_value ret = d->cb(d->env, reinterpret_cast<napi_callback_info>(&info));
     if (d->env->pending_exception != nullptr) {
+        scope.close();
         ForwardPendingException(d->env, exception);
         return instance;
     }
-    if (ret != nullptr && JSValueIsObject(ctx, ToJS(ret)))
-        return JSValueToObject(ctx, ToJS(ret), nullptr);
-    return instance;
+    JSObjectRef out = (ret != nullptr && JSValueIsObject(ctx, ToJS(ret))) ? JSValueToObject(ctx, ToJS(ret), nullptr)
+                                                                          : instance;
+    scope.close();
+    return out;
 }
 
 // Native init behind a real-JS-function constructor (AME-JSC-NEWTARGET-FIX).
@@ -170,12 +230,16 @@ JSValueRef ConstructorInitTrampoline(JSContextRef ctx, JSObjectRef function, JSO
             user_args.push_back(JSObjectGetPropertyAtIndex(ctx, arr, static_cast<unsigned>(i), nullptr));
     }
     CbInfo info{ctx, instance, user_args.size(), user_args.empty() ? nullptr : user_args.data(), new_target, d->data};
+    CallbackScope scope(d->env);
     napi_value ret = d->cb(d->env, reinterpret_cast<napi_callback_info>(&info));
     if (d->env->pending_exception != nullptr) {
+        scope.close();
         ForwardPendingException(d->env, exception);
         return JSValueMakeUndefined(ctx);
     }
-    return ret != nullptr ? ToJS(ret) : JSValueMakeUndefined(ctx);
+    JSValueRef out = ret != nullptr ? ToJS(ret) : JSValueMakeUndefined(ctx);
+    scope.close();
+    return out;
 }
 
 // Invoked when a define_class constructor is called without `new`. Matches
@@ -242,6 +306,18 @@ napi_status napi_jsc_record_exception(napi_env env, JSValueRef exc) {
     return napi_jsc_set_error(env, napi_pending_exception);
 }
 
+void napi_jsc_fatal_in_finalizer() {
+    // Matches Node's message (test_fatal_finalize asserts /Finalizer is calling a
+    // function that may affect GC state/ on the aborted child's stderr).
+    std::fprintf(stderr,
+                 "FATAL ERROR: Finalizer is calling a function that may affect GC state.\n"
+                 "The finalizers stored by `napi_add_finalizer` should only call basic Node-API "
+                 "methods. Use `node_api_post_finalizer` from inside of the finalizer to work "
+                 "around this issue.\n");
+    std::fflush(stderr);
+    std::abort();
+}
+
 void napi_jsc_drain_finalizers(napi_env env) {
     for (;;) {
         PendingFinalizer f;
@@ -252,8 +328,46 @@ void napi_jsc_drain_finalizers(napi_env env) {
             f = env->pending_finalizers.front();
             env->pending_finalizers.pop_front();
         }
-        if (f.cb != nullptr)
-            f.cb(env, f.data, f.hint);
+        if (f.cb == nullptr)
+            continue;
+        // A basic (napi_wrap / napi_add_finalizer) finalizer runs with the GC-guard
+        // set: any non-basic Node-API it calls hits NAPI_PREAMBLE's fatal check. A
+        // regular (napi_create_external) finalizer may call JS, so it runs unguarded.
+        env->in_gc_finalizer = f.basic;
+        f.cb(env, f.data, f.hint);
+        env->in_gc_finalizer = false;
+        // AME-JSC-FINALIZER-UNCAUGHT-FIX: a finalizer that runs JS may throw. Node
+        // routes such an error to process 'uncaughtException' (and, with no handler,
+        // reports "Error during Finalize"). Surface it through the host convention
+        // globalThis.__emitUncaughtException(err) if present, else the env's string
+        // uncaught hook; then clear so the remaining finalizers still run.
+        if (env->pending_exception != nullptr) {
+            JSValueRef err = env->pending_exception;
+            env->pending_exception = nullptr;  // take ownership of the protect
+            JSObjectRef global = JSContextGetGlobalObject(env->ctx);
+            JSValueRef emit = JSObjectGetProperty(env->ctx, global, JSStr("__emitUncaughtException"), nullptr);
+            bool surfaced = false;
+            if (emit != nullptr && JSValueIsObject(env->ctx, emit)) {
+                JSObjectRef emitFn = JSValueToObject(env->ctx, emit, nullptr);
+                if (emitFn != nullptr && JSObjectIsFunction(env->ctx, emitFn)) {
+                    JSValueRef a = err;
+                    JSObjectCallAsFunction(env->ctx, emitFn, nullptr, 1, &a, nullptr);
+                    surfaced = true;
+                }
+            }
+            if (!surfaced && env->uncaught != nullptr) {
+                JSStringRef s = JSValueToStringCopy(env->ctx, err, nullptr);
+                if (s != nullptr) {
+                    size_t n = JSStringGetMaximumUTF8CStringSize(s);
+                    std::string buf(n, '\0');
+                    JSStringGetUTF8CString(s, buf.data(), n);
+                    env->uncaught(buf.c_str());
+                    JSStringRelease(s);
+                }
+            }
+            JSValueUnprotect(env->ctx, err);
+            napi_jsc_clear_error(env);
+        }
     }
 }
 
@@ -353,6 +467,7 @@ void napi_jsc_env_delete(napi_env env) {
     unprotect(env->shared_arraybuffer_ctor);
     unprotect(env->sab_tag);
     unprotect(env->ctor_factory);
+    unprotect(env->fn_factory);
     unprotect(env->pending_exception);
 
     for (auto* scope : env->scopes) {
@@ -587,9 +702,18 @@ napi_status NAPI_CDECL napi_get_value_double(napi_env env, napi_value value, dou
 
 namespace {
 // ECMAScript ToInt32 / ToUint32 on an already-numeric double.
-int64_t ToInteger(double d) {
-    if (std::isnan(d) || std::isinf(d))
+int64_t ToInteger(double d) {  // AME-JSC-INT64-CLAMP-FIX
+    // napi_get_value_int64 semantics (matches Node's napi + V8 NumberToInt64):
+    // non-finite (NaN/±Inf) → 0; finite but out of int64 range → clamp to
+    // INT64_MAX / INT64_MIN (NOT a raw cast — casting an out-of-range double to
+    // int64 is UB and on x86 yields INT64_MIN for *both* overflow directions,
+    // so positive overflow wrongly came back negative). In-range → truncate.
+    if (!std::isfinite(d))
         return 0;
+    if (d >= 9223372036854775808.0)  // 2^63, first double past INT64_MAX
+        return std::numeric_limits<int64_t>::max();
+    if (d <= -9223372036854775808.0)  // -2^63 == INT64_MIN
+        return std::numeric_limits<int64_t>::min();
     return static_cast<int64_t>(d < 0 ? std::ceil(d) : std::floor(d));
 }
 uint32_t ToUint32(double d) {
@@ -641,6 +765,12 @@ napi_status NAPI_CDECL napi_get_value_bool(napi_env env, napi_value value, bool*
 napi_status NAPI_CDECL napi_create_string_utf8(napi_env env, const char* str, size_t length, napi_value* result) {  // AME-JSC-STR8-FIX
     CHECK_ENV(env);
     CHECK_ARG(env, result);
+    if (length > 0)  // V8 parity: NULL str only allowed with length 0 (AUTO_LENGTH=SIZE_MAX>0 → required)
+        CHECK_ARG(env, str);
+    // V8 parity: an explicit byte length above INT_MAX is rejected (else the decode
+    // loop reads far past the buffer → OOB crash). test_string TestLargeUtf8.
+    RETURN_STATUS_IF_FALSE(env, length == NAPI_AUTO_LENGTH || length <= static_cast<size_t>(INT_MAX),
+                           napi_invalid_arg);
     const char* p = str ? str : "";
     size_t n = (length == NAPI_AUTO_LENGTH) ? std::strlen(p) : length;
     // AmeCanvas fix: decode exactly `n` UTF-8 bytes to UTF-16 (U+FFFD for invalid
@@ -699,6 +829,10 @@ napi_status NAPI_CDECL napi_create_string_utf16(napi_env env, const char16_t* st
                                                 napi_value* result) {
     CHECK_ENV(env);
     CHECK_ARG(env, result);
+    if (length > 0)  // V8 parity: NULL str only allowed with length 0
+        CHECK_ARG(env, str);
+    RETURN_STATUS_IF_FALSE(env, length == NAPI_AUTO_LENGTH || length <= static_cast<size_t>(INT_MAX),
+                           napi_invalid_arg);  // V8 parity: reject oversize length (TestLargeUtf16)
     size_t n = (length == NAPI_AUTO_LENGTH) ? [&] {
         size_t i = 0;
         if (str) while (str[i] != 0) ++i;
@@ -714,6 +848,10 @@ napi_status NAPI_CDECL napi_create_string_utf16(napi_env env, const char16_t* st
 napi_status NAPI_CDECL napi_create_string_latin1(napi_env env, const char* str, size_t length, napi_value* result) {
     CHECK_ENV(env);
     CHECK_ARG(env, result);
+    if (length > 0)  // V8 parity: NULL str only allowed with length 0
+        CHECK_ARG(env, str);
+    RETURN_STATUS_IF_FALSE(env, length == NAPI_AUTO_LENGTH || length <= static_cast<size_t>(INT_MAX),
+                           napi_invalid_arg);  // V8 parity: reject oversize length (TestLargeLatin1)
     size_t n = (length == NAPI_AUTO_LENGTH) ? (str ? std::strlen(str) : 0) : length;
     std::vector<JSChar> u16(n);
     for (size_t i = 0; i < n; ++i)
@@ -777,6 +915,13 @@ napi_status NAPI_CDECL napi_get_value_string_utf8(napi_env env, napi_value value
         *result = out.size();
     } else {
         size_t copy = (bufsize == 0) ? 0 : std::min(out.size(), bufsize - 1);
+        // AME-JSC-UTF8-TRUNC-FIX: never split a multi-byte UTF-8 sequence. If the
+        // cut lands inside a character (the first excluded byte is a continuation
+        // byte 0x80–0xBF), back off to the preceding character boundary so the
+        // result is whole code points — matches V8's insufficient-buffer truncation
+        // (test_string testUnicodeCases TestUtf8Insufficient).
+        while (copy > 0 && copy < out.size() && (static_cast<unsigned char>(out[copy]) & 0xC0) == 0x80)
+            --copy;
         if (copy)
             std::memcpy(buf, out.data(), copy);
         if (bufsize > 0)

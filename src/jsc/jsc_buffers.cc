@@ -5,6 +5,7 @@
 
 #include "js_native_api_jsc.h"
 
+#include <climits>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -386,6 +387,18 @@ napi_status NAPI_CDECL napi_create_bigint_words(napi_env env, int sign_bit, size
     CHECK_ARG(env, result);
     if (word_count == 0 || words == nullptr)
         return EvalToValue(env, "0n", result);
+    // AME-JSC-BIGINT-SIZE-FIX: V8 parity. A word_count that doesn't fit in an int
+    // is rejected outright (napi_invalid_arg) — without this the loop below walked
+    // `words` for SIZE_MAX iterations and crashed (stack overflow / OOB read). A
+    // count that fits but exceeds the engine's BigInt capacity must surface the
+    // engine's RangeError ("Maximum BigInt size exceeded") as a pending exception,
+    // exactly as V8::BigInt::NewFromWords does.
+    RETURN_STATUS_IF_FALSE(env, word_count <= static_cast<size_t>(INT_MAX), napi_invalid_arg);
+    constexpr size_t kMaxBigIntWords = (size_t{1} << 30) / 64;  // V8 BigInt max ≈ 2^30 bits
+    if (word_count > kMaxBigIntWords) {
+        napi_throw_range_error(env, nullptr, "Maximum BigInt size exceeded");
+        return napi_jsc_set_error(env, napi_pending_exception);
+    }
     // Magnitude as a hex literal, most-significant word first; a leading unary
     // minus handles the sign. `-0x..n` is a valid BigInt expression.
     std::string code = sign_bit ? "-0x" : "0x";

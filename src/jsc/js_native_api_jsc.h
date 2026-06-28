@@ -72,6 +72,11 @@ struct ExternalState {
     napi_finalize finalize_cb = nullptr;
     void* finalize_hint = nullptr;
     std::shared_ptr<RefControl> ref_control;  // non-null iff this holder backs a weak ref
+    // True for the GC-time "basic" finalizers registered by napi_wrap /
+    // napi_add_finalizer: while one runs, calling a non-basic Node-API throws a
+    // fatal error (Node's node_api_basic_finalize restriction). napi_create_external
+    // finalizers are *regular* (basic=false) and may call JS. AME-JSC-BASICFIN-FIX
+    bool basic = false;
 };
 
 // Private data of a `function_class` / `constructor_class` object: routes a JSC
@@ -88,6 +93,7 @@ struct PendingFinalizer {
     napi_finalize cb;
     void* data;
     void* hint;
+    bool basic = false;  // run with env->in_gc_finalizer set (restricts non-basic Node-API)
 };
 
 // ---- env ------------------------------------------------------------------
@@ -115,6 +121,11 @@ struct napi_env__ {
     // constructor function so napi classes get correct new.target/derived-this,
     // a real .length and native instanceof. Built lazily by napi_define_class.
     JSObjectRef ctor_factory = nullptr;
+    // Cached JS factory (protected) wrapping a native init into a real ECMAScript
+    // *function* (constructable, correct new.target, real Function.prototype) — like
+    // ctor_factory but without the "must use new" guard. Built lazily by MakeFunction
+    // so every napi function/method is a genuine function. AME-JSC-REALFN-FIX
+    JSObjectRef fn_factory = nullptr;
 
     // Cached globals (protected) used to express operations the C API lacks.
     JSObjectRef obj_define_property = nullptr;   // Object.defineProperty
@@ -127,8 +138,17 @@ struct napi_env__ {
 
     std::mutex finalizer_mu;
     std::deque<PendingFinalizer> pending_finalizers;
+    // Set while a *basic* (napi_wrap / napi_add_finalizer) finalizer runs. A
+    // non-basic Node-API entered in this state is a fatal error (Node restricts
+    // node_api_basic_finalize to basic methods). Checked by NAPI_PREAMBLE.
+    bool in_gc_finalizer = false;
 
     int version = 9;  // reported by napi_get_version (node-api-headers v1.9.0)
+    // The loading module's NAPI_VERSION (node_api_module_get_api_version_v1). Only
+    // modules built at NAPI_VERSION_EXPERIMENTAL get the basic-finalizer GC-access
+    // restriction; defaults to a normal version so embedders that don't set it
+    // (e.g. AmeCanvas via the C++ Engine API) never restrict their finalizers.
+    int module_api_version = NAPI_VERSION;
 
     // Surfaces an unhandled JS error (e.g. thrown from a finalizer) to the host.
     void (*uncaught)(const char* msg) = nullptr;
@@ -175,6 +195,11 @@ napi_status napi_jsc_record_exception(napi_env env, JSValueRef exc);
 // Run all deferred finalizers (called from the per-tick hook and at teardown).
 void napi_jsc_drain_finalizers(napi_env env);
 
+// Abort the process with Node's "basic finalizer called a GC-affecting Node-API"
+// fatal message. Invoked by NAPI_PREAMBLE when a non-basic API is entered while a
+// basic (napi_wrap / napi_add_finalizer) finalizer is on the stack. [[noreturn]]
+[[noreturn]] void napi_jsc_fatal_in_finalizer();
+
 // env lifecycle, used by the embedding adapter (napi_jsc_engine.cc).
 napi_env napi_jsc_env_new(JSGlobalContextRef ctx, void (*uncaught)(const char*));
 void napi_jsc_env_delete(napi_env env);
@@ -204,6 +229,8 @@ void napi_jsc_env_delete(napi_env env);
 #define NAPI_PREAMBLE(env)                                                                                             \
     do {                                                                                                               \
         CHECK_ENV(env);                                                                                                \
+        if ((env)->in_gc_finalizer)                                                                                    \
+            napi_jsc_fatal_in_finalizer();                                                                             \
         napi_jsc_clear_error(env);                                                                                     \
         if ((env)->pending_exception != nullptr)                                                                       \
             return napi_jsc_set_error((env), napi_pending_exception);                                                  \

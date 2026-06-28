@@ -31,6 +31,8 @@ static const char* dlerror() { return "LoadLibrary failed"; }
 #include <spawn.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#include <csignal>  // sys_signame / NSIG
+#include <cctype>   // toupper
 #if defined(__APPLE__)
 #include <crt_externs.h>   // _NSGetEnviron() on macOS
 #define NAPI_RUNNER_ENVIRON (*_NSGetEnviron())
@@ -146,13 +148,21 @@ static napi_value JsDrainFinalizers(napi_env env, napi_callback_info /*info*/) {
 }
 
 #if defined(NAPI_RUNNER_JSC)
-// gc() for JSC: it has no --expose-gc, so back it with JSGarbageCollect. JSC's
-// collector is conservative over the C stack, so pump several passes (running
-// the public finalizer tick between each) to reclaim multi-level wrap/external
-// holders before the test asserts finalizer side effects.
+// JSC's public JSGarbageCollect() is only a *hint* and does not deterministically
+// reclaim objects, so finalizer-driven assertions (mustCall on a wrap/add_finalizer
+// callback after `tracked = null; gc()`) never fired. JSC's private
+// JSSynchronousGarbageCollectForDebugging() forces a full synchronous collection —
+// the same guarantee V8's --expose-gc gc() gives. It's exported by the system
+// JavaScriptCore.framework (declared in the private JSContextRefPrivate.h); declare
+// it here so the test harness can drive deterministic GC.
+extern "C" void JSSynchronousGarbageCollectForDebugging(JSContextRef ctx);
+
+// gc() for JSC. Force a synchronous full collection, then run the public finalizer
+// tick; pump several passes to reclaim multi-level wrap/external holder chains
+// before the test asserts finalizer side effects.
 static napi_value JscGc(napi_env env, napi_callback_info /*info*/) {
   for (int i = 0; i < 8; ++i) {
-    JSGarbageCollect(env->ctx);
+    JSSynchronousGarbageCollectForDebugging(env->ctx);
     napi_v8_run_event_loop_tasks(env);
   }
   napi_value undef;
@@ -275,17 +285,31 @@ static napi_value JsSpawnSync(napi_env env, napi_callback_info info) {
 
   int wstatus = 0;
   waitpid(pid, &wstatus, 0);
-  int status_code = WIFEXITED(wstatus) ? WEXITSTATUS(wstatus) : -1;
 
-  napi_value status_v, sout_v, serr_v;
-  napi_create_int32(env, status_code, &status_v);
+  napi_value status_v, sout_v, serr_v, signal_v;
+  // Node semantics: a child killed by a signal reports status=null, signal=NAME;
+  // a normal exit reports status=code, signal=null. test_fatal_finalize's child
+  // aborts (SIGABRT) and the parent checks common.nodeProcessAborted(status, signal).
+  if (WIFSIGNALED(wstatus)) {
+    int sig = WTERMSIG(wstatus);
+    napi_get_null(env, &status_v);
+    std::string name = "SIG";
+    const char* abbr = (sig > 0 && sig < NSIG) ? sys_signame[sig] : nullptr;
+    if (abbr != nullptr) {
+      for (const char* p = abbr; *p; ++p) name.push_back(std::toupper((unsigned char)*p));
+    } else {
+      name += std::to_string(sig);
+    }
+    napi_create_string_utf8(env, name.c_str(), name.size(), &signal_v);
+  } else {
+    napi_create_int32(env, WIFEXITED(wstatus) ? WEXITSTATUS(wstatus) : -1, &status_v);
+    napi_get_null(env, &signal_v);
+  }
   napi_create_string_utf8(env, sout.c_str(), sout.size(), &sout_v);
   napi_create_string_utf8(env, serr.c_str(), serr.size(), &serr_v);
   napi_set_named_property(env, result, "status", status_v);
   napi_set_named_property(env, result, "stdout", sout_v);
   napi_set_named_property(env, result, "stderr", serr_v);
-  napi_value signal_v;
-  napi_get_null(env, &signal_v);
   napi_set_named_property(env, result, "signal", signal_v);
   return result;
 }
@@ -505,6 +529,13 @@ const common = {
   isMainThread: true,
   isWindows: false,
   hasCrypto: false,
+  // A process that aborted (e.g. a fatal finalizer) reports a fatal signal on
+  // POSIX (status null, signal set). test_fatal_finalize uses this.
+  nodeProcessAborted: (exitCode, signal) => {
+    const sigs = ['SIGABRT', 'SIGILL', 'SIGTRAP', 'SIGBUS', 'SIGFPE', 'SIGSEGV'];
+    if (signal !== null && signal !== undefined) return sigs.includes(signal);
+    return [132, 133, 134, 135, 136, 139, 131].includes(exitCode);
+  },
   mustCall(fn, exact) {
     // common.mustCall(N) is valid (fn is the count, no callback).
     if (typeof fn === 'number') { exact = fn; fn = undefined; }
@@ -686,6 +717,16 @@ int main(int argc, char** argv) {
                  binding_path);
     return 1;
   }
+#if defined(NAPI_RUNNER_JSC)
+  // Record the module's declared NAPI version so the engine can apply the
+  // node_api_basic_finalize GC-access restriction only to NAPI_VERSION_EXPERIMENTAL
+  // modules (mirrors how Node passes the addon api version when binding the env).
+  typedef int32_t (*ApiVerFn)(void);
+  if (ApiVerFn ver = reinterpret_cast<ApiVerFn>(
+          dlsym(h, "node_api_module_get_api_version_v1"))) {
+    g_env->module_api_version = ver();
+  }
+#endif
   napi_value exports;
   CHK(napi_create_object(g_env, &exports));
   napi_value addon = reg(g_env, exports);
@@ -786,16 +827,26 @@ int main(int argc, char** argv) {
     napi_value ex;
     napi_get_and_clear_last_exception(g_env, &ex);
 
-    napi_value stack;
+    // JSC's Error.stack omits the "Name: message" header (unlike V8), so print
+    // name+message explicitly before the stack for a usable diagnostic.
+    auto get_str = [&](napi_value v) -> std::string {
+      napi_value as_str;
+      if (napi_coerce_to_string(g_env, v, &as_str) != napi_ok)
+        return "";
+      size_t len = 0;
+      napi_get_value_string_utf8(g_env, as_str, nullptr, 0, &len);
+      std::string buf(len + 1, '\0');
+      napi_get_value_string_utf8(g_env, as_str, buf.data(), buf.size(), &len);
+      buf.resize(len);
+      return buf;
+    };
+    napi_value mname, mmsg, stack;
+    napi_get_named_property(g_env, ex, "name", &mname);
+    napi_get_named_property(g_env, ex, "message", &mmsg);
     napi_get_named_property(g_env, ex, "stack", &stack);
-    napi_value as_str;
-    if (napi_coerce_to_string(g_env, stack, &as_str) != napi_ok)
-      napi_coerce_to_string(g_env, ex, &as_str);
-    size_t len = 0;
-    napi_get_value_string_utf8(g_env, as_str, nullptr, 0, &len);
-    std::string buf(len + 1, '\0');
-    napi_get_value_string_utf8(g_env, as_str, buf.data(), buf.size(), &len);
-    std::fprintf(stderr, "[fail] %s\n%s\n", test_path, buf.c_str());
+    std::fprintf(stderr, "[fail] %s\n%s: %s\n%s\n", test_path,
+                 get_str(mname).c_str(), get_str(mmsg).c_str(),
+                 get_str(stack).c_str());
     return 1;
   }
 
