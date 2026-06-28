@@ -78,8 +78,19 @@ bool InstanceOfGlobal(napi_env env, JSValueRef v, const char* ctor_name) {
     return ctor != nullptr && JSValueIsInstanceOfConstructor(env->ctx, v, ctor, nullptr);
 }
 
-JSObjectRef MakeFunction(napi_env env, napi_callback cb, void* data) {
-    return JSObjectMake(env->ctx, env->function_class, new CallbackData{env, cb, data});
+JSObjectRef MakeFunction(napi_env env, napi_callback cb, void* data) {  // AME-JSC-FNPROTO-FIX
+    JSObjectRef fn = JSObjectMake(env->ctx, env->function_class, new CallbackData{env, cb, data});
+    // AmeCanvas fix: napi callbacks are instances of a custom JSClass whose default
+    // [[Prototype]] is Object.prototype, so they lack Function.prototype methods
+    // (.call/.apply/.bind) even though they're callable. Reparent to
+    // Function.prototype so JS that treats them as ordinary functions works
+    // (e.g. the WPT harness does `window.addEventListener.bind(window)`).
+    if (JSObjectRef funcCtor = GlobalCtor(env, "Function")) {
+        JSValueRef proto = JSObjectGetProperty(env->ctx, funcCtor, JSStr("prototype"), nullptr);
+        if (proto != nullptr && JSValueIsObject(env->ctx, proto))
+            JSObjectSetPrototype(env->ctx, fn, proto);
+    }
+    return fn;
 }
 
 JSPropertyAttributes ToJSAttrs(napi_property_attributes a) {
