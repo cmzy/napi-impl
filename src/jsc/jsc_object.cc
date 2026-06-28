@@ -1083,6 +1083,12 @@ napi_status NAPI_CDECL napi_is_typedarray(napi_env env, napi_value value, bool* 
     JSValueRef exc = nullptr;
     JSTypedArrayType t = JSValueGetTypedArrayType(env->ctx, ToJS(value), &exc);
     *result = t != kJSTypedArrayTypeNone && t != kJSTypedArrayTypeArrayBuffer;
+    if (!*result) {
+        // AmeCanvas fix: JSC's C typed-array API doesn't recognize Float16Array. AME-JSC-FLOAT16-FIX
+        JSObjectRef f16 = GlobalCtor(env, "Float16Array");
+        if (f16 != nullptr && JSValueIsInstanceOfConstructor(env->ctx, ToJS(value), f16, nullptr))
+            *result = true;
+    }
     return napi_jsc_clear_error(env);
 }
 
