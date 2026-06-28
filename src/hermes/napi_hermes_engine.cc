@@ -193,6 +193,16 @@ napi_status NAPI_CDECL napi_create_env(napi_runtime runtime, napi_env *result) {
         return napi_invalid_arg;
     if (runtime->env == nullptr) {
         hermes::hbc::CompileFlags compileFlags; // defaults (lazy compilation)
+        // ES6 block scoping: per-iteration `let`/`const` bindings in loops. Hermes defaults this
+        // OFF (CompileFlags::enableES6BlockScoping{false}), which compiles block-scoped declarations
+        // like function-scoped `var` — so closures created in a loop body all capture the SAME
+        // binding (the final value), instead of one fresh binding per iteration. That silently
+        // breaks any standards-compliant JS relying on per-iteration `let` capture, e.g.
+        // `for (...) { let x = ...; queue(() => use(x)); }`. (Observed: WPT webaudio's audit.js
+        // schedules `for (...) { let task; promise_test(() => task.run()) }` — without this, every
+        // scheduled test captures the last task, so only the final task runs and earlier setup
+        // tasks never execute.) Enable it so `let`/`const` get correct ES2015 semantics.
+        compileFlags.enableES6BlockScoping = true;
         napi_platform plat = runtime->platform;
         std::function<void(napi_env, napi_value)> unhandled =
                 [plat](napi_env env, napi_value error) {
