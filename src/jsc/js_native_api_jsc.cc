@@ -142,10 +142,20 @@ JSObjectRef ConstructorTrampoline(JSContextRef ctx, JSObjectRef constructor, siz
 // Invoked when a define_class constructor is called without `new`. Matches
 // JSObjectCallAsFunctionCallback (returns JSValueRef); throws a TypeError.
 JSValueRef ConstructorAsFunction(JSContextRef ctx, JSObjectRef, JSObjectRef, size_t, const JSValueRef[],
-                                 JSValueRef* exception) {
+                                 JSValueRef* exception) {  // AME-JSC-CTORTYPEERR-FIX
     if (exception != nullptr) {
         JSValueRef msg = JSValueMakeString(ctx, JSStr("Class constructor cannot be invoked without 'new'"));
-        *exception = JSObjectMakeError(ctx, 1, &msg, nullptr);
+        // AmeCanvas fix: calling a constructor without `new` must throw a *TypeError*
+        // (Web IDL / ES), not a generic Error. JSObjectMakeError makes an Error, so
+        // construct a real TypeError via the global constructor; fall back to Error.
+        JSValueRef teVal =
+            JSObjectGetProperty(ctx, JSContextGetGlobalObject(ctx), JSStr("TypeError"), nullptr);
+        JSObjectRef teCtor =
+            (teVal != nullptr && JSValueIsObject(ctx, teVal)) ? JSValueToObject(ctx, teVal, nullptr) : nullptr;
+        JSValueRef err = nullptr;
+        if (teCtor != nullptr)
+            err = JSObjectCallAsConstructor(ctx, teCtor, 1, &msg, nullptr);
+        *exception = err != nullptr ? err : JSObjectMakeError(ctx, 1, &msg, nullptr);
     }
     return JSValueMakeUndefined(ctx);
 }
@@ -581,27 +591,59 @@ napi_status NAPI_CDECL napi_get_value_bool(napi_env env, napi_value value, bool*
 
 // ---- strings --------------------------------------------------------------
 
-napi_status NAPI_CDECL napi_create_string_utf8(napi_env env, const char* str, size_t length, napi_value* result) {  // AME-JSC-STRLEN-FIX
+napi_status NAPI_CDECL napi_create_string_utf8(napi_env env, const char* str, size_t length, napi_value* result) {  // AME-JSC-STR8-FIX
     CHECK_ENV(env);
     CHECK_ARG(env, result);
     const char* p = str ? str : "";
-    JSValueRef v;
-    if (length == NAPI_AUTO_LENGTH) {
-        JSStringRef s = JSStringCreateWithUTF8CString(p);
-        v = JSValueMakeString(env->ctx, s);
-        JSStringRelease(s);
-    } else {
-        // AmeCanvas fix: keep the JSStr in a *named* local. The original code did
-        // `JSStr(str, length).s` — a temporary whose ~JSStr (JSStringRelease) runs
-        // at the end of the full-expression, freeing the JSStringRef *before*
-        // JSValueMakeString below uses it (UAF) → JSValueMakeString sees a freed
-        // string and yields an EMPTY value. node-addon-api's String::New(const
-        // char*) passes strlen (not NAPI_AUTO_LENGTH), so this explicit-length
-        // path is hit for the injected JS bundle and *every* eval'd script — the
-        // UAF made all of them empty, so no JS ran at all. See docs/JSC_INTEGRATION.md.
-        JSStr holder(p, length);
-        v = JSValueMakeString(env->ctx, holder.s);
+    size_t n = (length == NAPI_AUTO_LENGTH) ? std::strlen(p) : length;
+    // AmeCanvas fix: decode exactly `n` UTF-8 bytes to UTF-16 (U+FFFD for invalid
+    // sequences) and build via JSStringCreateWithCharacters. The original
+    // JSStringCreateWithUTF8CString path is NUL-terminated, so it truncated strings
+    // at an embedded `\0` (e.g. URLSearchParams "%00" → "b\0c" became "b") and
+    // lenient-mangled invalid UTF-8 / lone surrogates. (Also fixes the earlier
+    // explicit-length temporary-UAF; node-addon-api String::New(const char*) passes
+    // strlen, so this path is hit for every eval'd script.) See docs/JSC_INTEGRATION.md.
+    const unsigned char* b = reinterpret_cast<const unsigned char*>(p);
+    std::vector<JSChar> u16;
+    u16.reserve(n);
+    auto emit = [&](uint32_t cp) {
+        if (cp <= 0xFFFF) {
+            u16.push_back(static_cast<JSChar>(cp));
+        } else {
+            cp -= 0x10000;
+            u16.push_back(static_cast<JSChar>(0xD800 + (cp >> 10)));
+            u16.push_back(static_cast<JSChar>(0xDC00 + (cp & 0x3FF)));
+        }
+    };
+    for (size_t i = 0; i < n;) {
+        unsigned char c = b[i];
+        if (c < 0x80) {
+            emit(c);
+            ++i;
+            continue;
+        }
+        int extra;
+        uint32_t acc, lo;
+        if ((c & 0xE0) == 0xC0) { extra = 1; acc = c & 0x1F; lo = 0x80; }
+        else if ((c & 0xF0) == 0xE0) { extra = 2; acc = c & 0x0F; lo = 0x800; }
+        else if ((c & 0xF8) == 0xF0) { extra = 3; acc = c & 0x07; lo = 0x10000; }
+        else { emit(0xFFFD); ++i; continue; }  // invalid lead byte
+        if (i + static_cast<size_t>(extra) >= n) { emit(0xFFFD); ++i; continue; }  // truncated
+        bool ok = true;
+        for (int k = 1; k <= extra; ++k) {
+            unsigned char cc = b[i + k];
+            if ((cc & 0xC0) != 0x80) { ok = false; break; }
+            acc = (acc << 6) | (cc & 0x3F);
+        }
+        if (!ok) { emit(0xFFFD); ++i; continue; }  // bad continuation
+        if (acc < lo || acc > 0x10FFFF || (acc >= 0xD800 && acc <= 0xDFFF)) { emit(0xFFFD); ++i; continue; }  // overlong/range/surrogate
+        emit(acc);
+        i += static_cast<size_t>(extra) + 1;
     }
+    static const JSChar kEmpty = 0;
+    JSStringRef s = JSStringCreateWithCharacters(u16.empty() ? &kEmpty : u16.data(), u16.size());
+    JSValueRef v = JSValueMakeString(env->ctx, s);
+    JSStringRelease(s);
     *result = napi_jsc_add_handle(env, v);
     return napi_jsc_clear_error(env);
 }
@@ -637,23 +679,64 @@ napi_status NAPI_CDECL napi_create_string_latin1(napi_env env, const char* str, 
 }
 
 napi_status NAPI_CDECL napi_get_value_string_utf8(napi_env env, napi_value value, char* buf, size_t bufsize,
-                                                  size_t* result) {
+                                                  size_t* result) {  // AME-JSC-STR8READ-FIX
     CHECK_ENV(env);
     CHECK_ARG(env, value);
     RETURN_STATUS_IF_FALSE(env, JSValueIsString(env->ctx, ToJS(value)), napi_string_expected);
     JSStringRef s = JSValueToStringCopy(env->ctx, ToJS(value), nullptr);
-    if (buf == nullptr) {
-        CHECK_ARG(env, result);
-        size_t maxsz = JSStringGetMaximumUTF8CStringSize(s);
-        std::vector<char> tmp(maxsz);
-        size_t written = JSStringGetUTF8CString(s, tmp.data(), maxsz);
-        *result = written > 0 ? written - 1 : 0;
-    } else {
-        size_t written = JSStringGetUTF8CString(s, buf, bufsize);
-        if (result != nullptr)
-            *result = written > 0 ? written - 1 : 0;
+    size_t len = JSStringGetLength(s);
+    const JSChar* chars = JSStringGetCharactersPtr(s);
+    // AmeCanvas fix: encode UTF-16 → UTF-8 mapping unpaired surrogates to U+FFFD
+    // (WHATWG / matches V8). JSStringGetUTF8CString drops/garbles lone surrogates,
+    // breaking round-trips of strings with unpaired surrogates (e.g. URLSearchParams
+    // "\ud800x" should read back as "�x"). Length-based, so embedded NUL is safe.
+    std::string out;
+    out.reserve(len + 8);
+    auto put = [&](uint32_t cp) {
+        if (cp < 0x80) {
+            out.push_back(static_cast<char>(cp));
+        } else if (cp < 0x800) {
+            out.push_back(static_cast<char>(0xC0 | (cp >> 6)));
+            out.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+        } else if (cp < 0x10000) {
+            out.push_back(static_cast<char>(0xE0 | (cp >> 12)));
+            out.push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)));
+            out.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+        } else {
+            out.push_back(static_cast<char>(0xF0 | (cp >> 18)));
+            out.push_back(static_cast<char>(0x80 | ((cp >> 12) & 0x3F)));
+            out.push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)));
+            out.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+        }
+    };
+    for (size_t i = 0; i < len; ++i) {
+        uint32_t u = chars[i];
+        if (u >= 0xD800 && u <= 0xDBFF) {  // high surrogate
+            if (i + 1 < len && chars[i + 1] >= 0xDC00 && chars[i + 1] <= 0xDFFF) {
+                uint32_t lo = chars[++i];
+                put(0x10000 + ((u - 0xD800) << 10) + (lo - 0xDC00));
+            } else {
+                put(0xFFFD);  // unpaired high
+            }
+        } else if (u >= 0xDC00 && u <= 0xDFFF) {  // unpaired low
+            put(0xFFFD);
+        } else {
+            put(u);
+        }
     }
     JSStringRelease(s);
+    if (buf == nullptr) {
+        CHECK_ARG(env, result);
+        *result = out.size();
+    } else {
+        size_t copy = (bufsize == 0) ? 0 : std::min(out.size(), bufsize - 1);
+        if (copy)
+            std::memcpy(buf, out.data(), copy);
+        if (bufsize > 0)
+            buf[copy] = 0;
+        if (result != nullptr)
+            *result = copy;
+    }
     return napi_jsc_clear_error(env);
 }
 
