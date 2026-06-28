@@ -791,6 +791,24 @@ napi_status NAPI_CDECL napi_wrap(napi_env env, napi_value js_object, void* nativ
     CHECK_ARG(env, native_object);
     JSObjectRef obj = AsObject(env, js_object);
     RETURN_STATUS_IF_FALSE(env, obj != nullptr, napi_object_expected);
+    // Node/V8 semantics: napi_wrap on an already-wrapped object MUST fail
+    // (callers re-wrap only after napi_remove_wrap). Without this, the unconditional
+    // AttachHolder below silently OVERWRITES the existing wrap holder with a fresh
+    // native object — discarding the prior native state. AmeCanvas's idempotent
+    // __ameWrapNodeEventTarget(this) (called on every FileReader add/dispatch) thus
+    // RESET its EventTarget core on JSC, losing all addEventListener listeners →
+    // FileReader EventWatcher tests hung (V8's napi_wrap rejected the re-wrap, so it
+    // didn't regress there). Reject when a live wrap holder is already present
+    // (holder with non-null data; a post-remove_wrap holder has data==null and is
+    // re-wrappable). AME-JSC-REWRAP-FIX
+    {
+        JSValueRef hv = JSObjectGetPropertyForKey(env->ctx, obj, env->wrap_key, nullptr);
+        if (hv != nullptr && JSValueIsObjectOfClass(env->ctx, hv, env->external_class)) {
+            auto* existing = static_cast<ExternalState*>(JSObjectGetPrivate(JSValueToObject(env->ctx, hv, nullptr)));
+            if (existing != nullptr && existing->data != nullptr)
+                return napi_jsc_set_error(env, napi_invalid_arg);
+        }
+    }
     // If the caller wants a reference back, the returned (weak) ref shares the
     // wrap holder's control block — one holder serves both the user finalizer
     // and the ref's collection tracking (mirrors Node's single Reference).
