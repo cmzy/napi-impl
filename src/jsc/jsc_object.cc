@@ -639,7 +639,20 @@ napi_status NAPI_CDECL napi_define_class(napi_env env, const char* utf8name, siz
     JSObjectSetProperty(ctx, ctor, JSStr("prototype"), proto,
                         kJSPropertyAttributeReadOnly | kJSPropertyAttributeDontEnum | kJSPropertyAttributeDontDelete,
                         nullptr);
-    JSObjectSetProperty(ctx, proto, JSStr("constructor"), ctor, kJSPropertyAttributeDontEnum, nullptr);
+    // AmeCanvas fix: define `constructor` non-enumerable (writable+configurable),
+    // per the ES spec / matching V8. JSObjectSetProperty's kJSPropertyAttributeDontEnum
+    // is NOT honored here under JSC — the property comes out enumerable, leaks into
+    // `for..in`, and trips conformance that enumerates an interface's own functions
+    // (e.g. WebGL offscreencanvas/methods). Use the Object.defineProperty path
+    // (same as DefineOne for methods), which applies attributes reliably.
+    // AME-JSC-CTORENUM-FIX
+    {
+        napi_property_descriptor cd = {};
+        cd.utf8name = "constructor";
+        cd.value = napi_jsc_add_handle(env, ctor);
+        cd.attributes = static_cast<napi_property_attributes>(napi_writable | napi_configurable);
+        DefineOne(env, proto, &cd);
+    }
     if (utf8name != nullptr) {
         std::string name = (length == NAPI_AUTO_LENGTH) ? std::string(utf8name) : std::string(utf8name, length);
         JSObjectSetProperty(ctx, ctor, JSStr("name"), JSValueMakeString(ctx, JSStr(name.c_str())),
