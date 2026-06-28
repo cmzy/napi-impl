@@ -108,6 +108,13 @@ struct napi_env__ {
     JSClassRef external_class = nullptr;
     JSClassRef function_class = nullptr;
     JSClassRef constructor_class = nullptr;
+    // Native init backing a real-JS-function constructor (AME-JSC-NEWTARGET-FIX):
+    // callAsFunction repackages (new.target, this, args) into a constructor CbInfo.
+    JSClassRef ctor_init_class = nullptr;
+    // Cached JS factory (protected): wraps a native init into a real ECMAScript
+    // constructor function so napi classes get correct new.target/derived-this,
+    // a real .length and native instanceof. Built lazily by napi_define_class.
+    JSObjectRef ctor_factory = nullptr;
 
     // Cached globals (protected) used to express operations the C API lacks.
     JSObjectRef obj_define_property = nullptr;   // Object.defineProperty

@@ -634,31 +634,65 @@ napi_status NAPI_CDECL napi_define_class(napi_env env, const char* utf8name, siz
     CHECK_ARG(env, result);
     JSContextRef ctx = env->ctx;
 
-    JSObjectRef ctor = JSObjectMake(ctx, env->constructor_class, new CallbackData{env, ctor_cb, data});
-    JSObjectRef proto = JSObjectMake(ctx, nullptr, nullptr);
-    JSObjectSetProperty(ctx, ctor, JSStr("prototype"), proto,
-                        kJSPropertyAttributeReadOnly | kJSPropertyAttributeDontEnum | kJSPropertyAttributeDontDelete,
-                        nullptr);
-    // AmeCanvas fix: define `constructor` non-enumerable (writable+configurable),
-    // per the ES spec / matching V8. JSObjectSetProperty's kJSPropertyAttributeDontEnum
-    // is NOT honored here under JSC — the property comes out enumerable, leaks into
-    // `for..in`, and trips conformance that enumerates an interface's own functions
-    // (e.g. WebGL offscreencanvas/methods). Use the Object.defineProperty path
-    // (same as DefineOne for methods), which applies attributes reliably.
-    // AME-JSC-CTORENUM-FIX
-    {
-        napi_property_descriptor cd = {};
-        cd.utf8name = "constructor";
-        cd.value = napi_jsc_add_handle(env, ctor);
-        cd.attributes = static_cast<napi_property_attributes>(napi_writable | napi_configurable);
-        DefineOne(env, proto, &cd);
+    // Build the constructor as a *real* ECMAScript function rather than a JSC
+    // callAsConstructor object. A real function is what makes napi classes behave:
+    //  · correct `new.target` and derived-`this` under `class Sub extends Ctor`
+    //    (JSC's own subclassing creates `this` with new.target.prototype);
+    //  · a real `.length` (0 — matching V8's napi ctors; e.g. Blob.length === 0);
+    //  · native `instanceof` (it inherits Function.prototype[@@hasInstance]);
+    //  · a spec `prototype.constructor` (non-enumerable, writable+configurable).
+    // The function closes over a native init (ctor_init_class) that carries the
+    // napi callback; the JS body forwards (new.target, this, args) to it and throws
+    // a TypeError when invoked without `new`.  AME-JSC-NEWTARGET-FIX
+    // (Supersedes the prior JSClass-ctor workarounds for CTORENUM/HASINSTANCE/no-new
+    // TypeError — all now fall out of using a genuine function.)
+    JSObjectRef native_init = JSObjectMake(ctx, env->ctor_init_class, new CallbackData{env, ctor_cb, data});
+    if (env->ctor_factory == nullptr) {
+        JSStr factory_src(
+            "(function(__init){return function(...args){"
+            "if(new.target===undefined)"
+            "throw new TypeError(\"Class constructor cannot be invoked without 'new'\");"
+            "return __init(new.target,this,args);};})");
+        JSValueRef exc = nullptr;
+        JSValueRef f = JSEvaluateScript(ctx, factory_src, nullptr, nullptr, 0, &exc);
+        if (exc != nullptr)
+            return napi_jsc_record_exception(env, exc);
+        if (f == nullptr || !JSValueIsObject(ctx, f))
+            return napi_jsc_set_error(env, napi_generic_failure);
+        env->ctor_factory = JSValueToObject(ctx, f, nullptr);
+        JSValueProtect(ctx, env->ctor_factory);
     }
+    JSValueRef init_arg = native_init;
+    JSValueRef exc = nullptr;
+    JSValueRef ctor_v = JSObjectCallAsFunction(ctx, env->ctor_factory, nullptr, 1, &init_arg, &exc);
+    if (exc != nullptr)
+        return napi_jsc_record_exception(env, exc);
+    if (ctor_v == nullptr || !JSValueIsObject(ctx, ctor_v))
+        return napi_jsc_set_error(env, napi_generic_failure);
+    JSObjectRef ctor = JSValueToObject(ctx, ctor_v, nullptr);
+
+    // Use the function's own prototype (already carries a non-enumerable
+    // `constructor` === ctor and is extensible, ready for the methods below).
+    JSValueRef proto_v = JSObjectGetProperty(ctx, ctor, JSStr("prototype"), nullptr);
+    if (proto_v == nullptr || !JSValueIsObject(ctx, proto_v))
+        return napi_jsc_set_error(env, napi_generic_failure);
+    JSObjectRef proto = JSValueToObject(ctx, proto_v, nullptr);
+
     if (utf8name != nullptr) {
         std::string name = (length == NAPI_AUTO_LENGTH) ? std::string(utf8name) : std::string(utf8name, length);
-        JSObjectSetProperty(ctx, ctor, JSStr("name"), JSValueMakeString(ctx, JSStr(name.c_str())),
-                            kJSPropertyAttributeReadOnly | kJSPropertyAttributeDontEnum, nullptr);
+        // Function.name is {writable:false, configurable:true}; a plain set is
+        // rejected, so redefine via Object.defineProperty (DefineOne).
+        napi_property_descriptor nd = {};
+        nd.utf8name = "name";
+        nd.value = napi_jsc_add_handle(env, JSValueMakeString(ctx, JSStr(name.c_str())));
+        nd.attributes = napi_configurable;  // => writable:false, enumerable:false, configurable:true
+        DefineOne(env, ctor, &nd);
     }
-    InstallHasInstance(ctx, ctor);  // make `x instanceof Ctor` work under JSC (AME-JSC-HASINSTANCE-FIX)
+    // Belt-and-suspenders: a real function already gets correct native instanceof
+    // (it inherits Function.prototype[@@hasInstance]); installing an own,
+    // spec-equivalent @@hasInstance keeps behavior identical to the prior path and
+    // is harmless. AME-JSC-HASINSTANCE-FIX
+    InstallHasInstance(ctx, ctor);
 
     for (size_t i = 0; i < prop_count; ++i) {
         const napi_property_descriptor* p = &props[i];

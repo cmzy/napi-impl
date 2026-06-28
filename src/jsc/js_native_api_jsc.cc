@@ -139,6 +139,45 @@ JSObjectRef ConstructorTrampoline(JSContextRef ctx, JSObjectRef constructor, siz
     return instance;
 }
 
+// Native init behind a real-JS-function constructor (AME-JSC-NEWTARGET-FIX).
+// The JS trampoline (see napi_define_class) calls us as
+//   __init(new.target, this, args)
+// so argv[0]=new.target, argv[1]=`this` (the instance JSC already created with
+// new.target.prototype — correct even for `class Sub extends Ctor`), argv[2]=the
+// user args array. We repackage into a constructor CbInfo (this + new_target +
+// spread args) and run the napi callback. Making napi classes *real* functions is
+// what gives them correct subclassing/new.target, a real `.length`, native
+// `instanceof`, and a non-enumerable `prototype.constructor` — none achievable via
+// JSC's C-API callAsConstructor object.
+JSValueRef ConstructorInitTrampoline(JSContextRef ctx, JSObjectRef function, JSObjectRef /*thisObject*/, size_t argc,
+                                     const JSValueRef argv[], JSValueRef* exception) {
+    auto* d = static_cast<CallbackData*>(JSObjectGetPrivate(function));
+    if (d == nullptr || d->cb == nullptr)
+        return JSValueMakeUndefined(ctx);
+    JSObjectRef new_target =
+        (argc > 0 && JSValueIsObject(ctx, argv[0])) ? JSValueToObject(ctx, argv[0], nullptr) : nullptr;
+    JSObjectRef instance =
+        (argc > 1 && JSValueIsObject(ctx, argv[1])) ? JSValueToObject(ctx, argv[1], nullptr) : nullptr;
+    // Spread the user args array (argv[2]) back into a flat vector for CbInfo.
+    std::vector<JSValueRef> user_args;
+    if (argc > 2 && JSValueIsObject(ctx, argv[2])) {
+        JSObjectRef arr = JSValueToObject(ctx, argv[2], nullptr);
+        JSStr len_key("length");
+        double n = JSValueToNumber(ctx, JSObjectGetProperty(ctx, arr, len_key, nullptr), nullptr);
+        size_t count = (n == n && n > 0) ? static_cast<size_t>(n) : 0;  // NaN-safe
+        user_args.reserve(count);
+        for (size_t i = 0; i < count; ++i)
+            user_args.push_back(JSObjectGetPropertyAtIndex(ctx, arr, static_cast<unsigned>(i), nullptr));
+    }
+    CbInfo info{ctx, instance, user_args.size(), user_args.empty() ? nullptr : user_args.data(), new_target, d->data};
+    napi_value ret = d->cb(d->env, reinterpret_cast<napi_callback_info>(&info));
+    if (d->env->pending_exception != nullptr) {
+        ForwardPendingException(d->env, exception);
+        return JSValueMakeUndefined(ctx);
+    }
+    return ret != nullptr ? ToJS(ret) : JSValueMakeUndefined(ctx);
+}
+
 // Invoked when a define_class constructor is called without `new`. Matches
 // JSObjectCallAsFunctionCallback (returns JSValueRef); throws a TypeError.
 JSValueRef ConstructorAsFunction(JSContextRef ctx, JSObjectRef, JSObjectRef, size_t, const JSValueRef[],
@@ -243,6 +282,12 @@ napi_env napi_jsc_env_new(JSGlobalContextRef ctx, void (*uncaught)(const char*))
     ctor.finalize = CallbackFinalize;
     env->constructor_class = JSClassCreate(&ctor);
 
+    JSClassDefinition ctor_init = kJSClassDefinitionEmpty;  // AME-JSC-NEWTARGET-FIX
+    ctor_init.className = "NapiClassInit";
+    ctor_init.callAsFunction = ConstructorInitTrampoline;
+    ctor_init.finalize = CallbackFinalize;
+    env->ctor_init_class = JSClassCreate(&ctor_init);
+
     env->scopes.push_back(new napi_handle_scope__());  // root scope
 
     JSObjectRef global = JSContextGetGlobalObject(ctx);
@@ -307,6 +352,7 @@ void napi_jsc_env_delete(napi_env env) {
     unprotect(env->type_tag_key);
     unprotect(env->shared_arraybuffer_ctor);
     unprotect(env->sab_tag);
+    unprotect(env->ctor_factory);
     unprotect(env->pending_exception);
 
     for (auto* scope : env->scopes) {
@@ -319,6 +365,7 @@ void napi_jsc_env_delete(napi_env env) {
     if (env->external_class) JSClassRelease(env->external_class);
     if (env->function_class) JSClassRelease(env->function_class);
     if (env->constructor_class) JSClassRelease(env->constructor_class);
+    if (env->ctor_init_class) JSClassRelease(env->ctor_init_class);
 
     JSGlobalContextRelease(env->ctx);   // fires remaining finalizes -> enqueue
     napi_jsc_drain_finalizers(env);     // best-effort (ctx gone; callbacks free memory)
