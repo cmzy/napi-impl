@@ -31,8 +31,7 @@ static const char* dlerror() { return "LoadLibrary failed"; }
 #include <spawn.h>
 #include <sys/wait.h>
 #include <unistd.h>
-#include <csignal>  // sys_signame / NSIG
-#include <cctype>   // toupper
+#include <csignal>  // signal macros (SIG*) for SignalName
 #if defined(__APPLE__)
 #include <crt_externs.h>   // _NSGetEnviron() on macOS
 #define NAPI_RUNNER_ENVIRON (*_NSGetEnviron())
@@ -207,6 +206,102 @@ static napi_value JsSpawnSync(napi_env env, napi_callback_info /*info*/) {
     return result;
 }
 #else
+// Map a signal number to its Node-style name (e.g. SIGABRT). Portable: glibc
+// has no BSD `sys_signame`, so we match against the standard SIG* macros. An
+// if-chain (not a switch) tolerates platforms where two names share a value.
+static std::string SignalName(int sig) {
+#define NAPI_SIG_NAME(s) if (sig == (s)) return #s;
+#ifdef SIGHUP
+  NAPI_SIG_NAME(SIGHUP)
+#endif
+#ifdef SIGINT
+  NAPI_SIG_NAME(SIGINT)
+#endif
+#ifdef SIGQUIT
+  NAPI_SIG_NAME(SIGQUIT)
+#endif
+#ifdef SIGILL
+  NAPI_SIG_NAME(SIGILL)
+#endif
+#ifdef SIGTRAP
+  NAPI_SIG_NAME(SIGTRAP)
+#endif
+#ifdef SIGABRT
+  NAPI_SIG_NAME(SIGABRT)
+#endif
+#ifdef SIGBUS
+  NAPI_SIG_NAME(SIGBUS)
+#endif
+#ifdef SIGFPE
+  NAPI_SIG_NAME(SIGFPE)
+#endif
+#ifdef SIGKILL
+  NAPI_SIG_NAME(SIGKILL)
+#endif
+#ifdef SIGUSR1
+  NAPI_SIG_NAME(SIGUSR1)
+#endif
+#ifdef SIGSEGV
+  NAPI_SIG_NAME(SIGSEGV)
+#endif
+#ifdef SIGUSR2
+  NAPI_SIG_NAME(SIGUSR2)
+#endif
+#ifdef SIGPIPE
+  NAPI_SIG_NAME(SIGPIPE)
+#endif
+#ifdef SIGALRM
+  NAPI_SIG_NAME(SIGALRM)
+#endif
+#ifdef SIGTERM
+  NAPI_SIG_NAME(SIGTERM)
+#endif
+#ifdef SIGCHLD
+  NAPI_SIG_NAME(SIGCHLD)
+#endif
+#ifdef SIGCONT
+  NAPI_SIG_NAME(SIGCONT)
+#endif
+#ifdef SIGSTOP
+  NAPI_SIG_NAME(SIGSTOP)
+#endif
+#ifdef SIGTSTP
+  NAPI_SIG_NAME(SIGTSTP)
+#endif
+#ifdef SIGTTIN
+  NAPI_SIG_NAME(SIGTTIN)
+#endif
+#ifdef SIGTTOU
+  NAPI_SIG_NAME(SIGTTOU)
+#endif
+#ifdef SIGURG
+  NAPI_SIG_NAME(SIGURG)
+#endif
+#ifdef SIGXCPU
+  NAPI_SIG_NAME(SIGXCPU)
+#endif
+#ifdef SIGXFSZ
+  NAPI_SIG_NAME(SIGXFSZ)
+#endif
+#ifdef SIGVTALRM
+  NAPI_SIG_NAME(SIGVTALRM)
+#endif
+#ifdef SIGPROF
+  NAPI_SIG_NAME(SIGPROF)
+#endif
+#ifdef SIGWINCH
+  NAPI_SIG_NAME(SIGWINCH)
+#endif
+#ifdef SIGSYS
+  NAPI_SIG_NAME(SIGSYS)
+#endif
+#ifdef SIGIO
+  NAPI_SIG_NAME(SIGIO)
+#endif
+#undef NAPI_SIG_NAME
+  return "SIG" + std::to_string(sig);
+}
+
 static napi_value JsSpawnSync(napi_env env, napi_callback_info info) {
   size_t argc = 2;
   napi_value argv[2];
@@ -293,13 +388,7 @@ static napi_value JsSpawnSync(napi_env env, napi_callback_info info) {
   if (WIFSIGNALED(wstatus)) {
     int sig = WTERMSIG(wstatus);
     napi_get_null(env, &status_v);
-    std::string name = "SIG";
-    const char* abbr = (sig > 0 && sig < NSIG) ? sys_signame[sig] : nullptr;
-    if (abbr != nullptr) {
-      for (const char* p = abbr; *p; ++p) name.push_back(std::toupper((unsigned char)*p));
-    } else {
-      name += std::to_string(sig);
-    }
+    std::string name = SignalName(sig);
     napi_create_string_utf8(env, name.c_str(), name.size(), &signal_v);
   } else {
     napi_create_int32(env, WIFEXITED(wstatus) ? WEXITSTATUS(wstatus) : -1, &status_v);
