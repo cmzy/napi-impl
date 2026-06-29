@@ -312,14 +312,20 @@ jobs:
           path: out/dist/napi-v8-windows-x64.zip
 
   jsc-apple:
-    name: JSC static .xcframework + cmake (macOS + iOS)
+    name: JSC static framework + xcframework + cmake (macOS + iOS)
     runs-on: macos-15
     timeout-minutes: 90
     # JSC targets Apple's system JavaScriptCore.framework — no V8/Hermes engine to
     # build, so this job needs neither the V8 source cache nor scripts/setup.py.
-    # Ships a STATIC archive (libnapi_jsc.a): per-arch CMake packages + a
-    # multi-slice NapiJSC.xcframework (mac arm64+x86_64, iOS device arm64, iOS
-    # simulator arm64+x86_64).
+    # Ships a STATIC archive (libnapi_jsc.a) three ways:
+    #   - per-arch CMake packages (mac arm64+x86_64, iOS device arm64, iOS sim
+    #     arm64+x86_64)
+    #   - a multi-slice NapiJSC.xcframework (the canonical form: device + sim arm64
+    #     can only coexist in an xcframework, not a flat framework)
+    #   - flat NapiJSC-macos.framework (fat arm64+x86_64) + NapiJSC-ios.framework
+    #     (device arm64), mirroring the V8 flat-framework artifacts for consumers
+    #     that ingest a single-platform .framework directly. iOS simulator is
+    #     covered by the xcframework + cmake package.
     steps:
       - uses: actions/checkout@v4
 
@@ -339,10 +345,25 @@ jobs:
       - name: Assemble NapiJSC.xcframework
         run: python3 scripts/package_apple.py --engine=jsc --target=xcframework --version=${GITHUB_REF_NAME#v}
 
+      - name: Assemble flat frameworks (macOS fat + iOS device)
+        run: |
+          python3 scripts/package_apple.py --engine=jsc --target=macos --version=${GITHUB_REF_NAME#v}
+          python3 scripts/package_apple.py --engine=jsc --target=ios   --version=${GITHUB_REF_NAME#v}
+
       - uses: actions/upload-artifact@v4
         with:
           name: NapiJSC.xcframework
           path: out/dist/NapiJSC.xcframework
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: NapiJSC-macos.framework
+          path: out/dist/NapiJSC-macos.framework
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: NapiJSC-ios.framework
+          path: out/dist/NapiJSC-ios.framework
 
       - uses: actions/upload-artifact@v4
         with: { name: napi-jsc-mac-arm64,     path: out/dist/napi-jsc-mac-arm64.tar.gz }
@@ -374,6 +395,8 @@ jobs:
           (cd NapiV8-macos.framework && zip -r ../NapiV8-macos.framework.zip .)
           (cd NapiV8-ios.framework   && zip -r ../NapiV8-ios.framework.zip .)
           (cd NapiJSC.xcframework    && zip -r ../NapiJSC.xcframework.zip .)
+          (cd NapiJSC-macos.framework && zip -r ../NapiJSC-macos.framework.zip .)
+          (cd NapiJSC-ios.framework   && zip -r ../NapiJSC-ios.framework.zip .)
 
       - name: Compose release body
         run: |
@@ -385,6 +408,8 @@ jobs:
             echo "| \`NapiV8-macos.framework.zip\` | macOS framework (arm64 + x86_64 lipo) |"
             echo "| \`NapiV8-ios.framework.zip\` | iOS framework (device arm64) |"
             echo "| \`NapiJSC.xcframework.zip\` | JSC static xcframework (macOS + iOS device + iOS simulator) |"
+            echo "| \`NapiJSC-macos.framework.zip\` | JSC static macOS framework (arm64 + x86_64 lipo) |"
+            echo "| \`NapiJSC-ios.framework.zip\` | JSC static iOS framework (device arm64) |"
             echo "| \`napi-v8.aar\` | Android (arm64-v8a + x86_64, Prefab v2) |"
             echo "| \`napi-v8-mac-arm64.tar.gz\` | macOS arm64 CMake |"
             echo "| \`napi-v8-mac-x86_64.tar.gz\` | macOS x86_64 CMake |"
@@ -423,6 +448,8 @@ jobs:
             dist/NapiV8-macos.framework.zip
             dist/NapiV8-ios.framework.zip
             dist/NapiJSC.xcframework.zip
+            dist/NapiJSC-macos.framework.zip
+            dist/NapiJSC-ios.framework.zip
             dist/napi-jsc-mac-arm64/napi-jsc-mac-arm64.tar.gz
             dist/napi-jsc-mac-x86_64/napi-jsc-mac-x86_64.tar.gz
             dist/napi-jsc-ios-arm64/napi-jsc-ios-arm64.tar.gz

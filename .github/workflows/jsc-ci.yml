@@ -157,3 +157,16 @@ jobs:
         with:
           name: NapiJSC.xcframework
           path: out/dist/NapiJSC.xcframework
+
+      # Per-arch static CMake packages — same artifacts the release flow ships, so
+      # PR/push consumers can grab a single-slice package without cutting a release.
+      - uses: actions/upload-artifact@v4
+        with: { name: napi-jsc-mac-arm64,      path: out/dist/napi-jsc-mac-arm64.tar.gz }
+      - uses: actions/upload-artifact@v4
+        with: { name: napi-jsc-mac-x86_64,     path: out/dist/napi-jsc-mac-x86_64.tar.gz }
+      - uses: actions/upload-artifact@v4
+        with: { name: napi-jsc-ios-arm64,      path: out/dist/napi-jsc-ios-arm64.tar.gz }
+      - uses: actions/upload-artifact@v4
+        with: { name: napi-jsc-ios_sim-arm64,  path: out/dist/napi-jsc-ios_sim-arm64.tar.gz }
+      - uses: actions/upload-artifact@v4
+        with: { name: napi-jsc-ios_sim-x86_64, path: out/dist/napi-jsc-ios_sim-x86_64.tar.gz }
