@@ -822,7 +822,9 @@ bool AttachHolder(napi_env env, JSObjectRef anchor, JSValueRef key, void* data, 
     // JS). napi_create_external builds its ExternalState directly with basic=false.
     // AME-JSC-BASICFIN-FIX
     const bool basic = (env->module_api_version == NAPI_VERSION_EXPERIMENTAL);
-    auto* st = new ExternalState{env, data, finalize_cb, hint, std::move(control), basic};
+    auto* st = new ExternalState{env, data, finalize_cb, hint, {}, basic};
+    if (control)
+        st->ref_controls.push_back(std::move(control));
     JSObjectRef holder = JSObjectMake(env->ctx, env->external_class, st);
     JSValueRef exc = nullptr;
     JSObjectSetPropertyForKey(env->ctx, anchor, key, holder,
@@ -843,6 +845,23 @@ napi_ref MakeReference(napi_env env, JSValueRef v, uint32_t count) {
     if (JSValueIsObject(env->ctx, v)) {
         JSObjectRef obj = JSValueToObject(env->ctx, v, nullptr);
         auto control = std::make_shared<RefControl>(RefControl{env, v, true});
+        // Prefer attaching this control to the object's existing napi_wrap holder
+        // so the wrap's (deferred) finalizer and this weak ref share ONE
+        // ExternalFinalize: the control is cleared before the finalizer is
+        // deferred, so a wrap finalizer that reads this ref always sees it empty,
+        // regardless of GC finalize order. Without this, the wrap holder and a
+        // separate ref holder can finalize in different GC passes, and on arm64
+        // the wrap finalizer drained before the ref holder cleared the control →
+        // test_reference's `assert(value == NULL)` aborted. AME-JSC-REFORDER-FIX
+        JSValueRef hv = JSObjectGetPropertyForKey(env->ctx, obj, env->wrap_key, nullptr);
+        if (hv != nullptr && JSValueIsObjectOfClass(env->ctx, hv, env->external_class)) {
+            if (auto* st = static_cast<ExternalState*>(JSObjectGetPrivate(JSValueToObject(env->ctx, hv, nullptr)))) {
+                st->ref_controls.push_back(control);
+                if (count > 0)
+                    JSValueProtect(env->ctx, v);  // strong while refcount > 0
+                return new napi_ref__{env, count, true, control, nullptr};
+            }
+        }
         JSValueRef key = JSValueMakeSymbol(env->ctx, JSStr("napi.ref"));
         if (AttachHolder(env, obj, key, nullptr, nullptr, nullptr, control, nullptr)) {
             if (count > 0)
@@ -948,9 +967,9 @@ napi_status NAPI_CDECL napi_remove_wrap(napi_env env, napi_value js_object, void
         *result = st->data;
     st->finalize_cb = nullptr;  // detach: the user reclaims ownership, no finalizer
     st->data = nullptr;
-    // Keep the holder attached when it also backs a weak ref, so that ref keeps
+    // Keep the holder attached when it also backs weak refs, so those refs keep
     // tracking the (still-live) object; otherwise drop the hidden wrap property.
-    if (!st->ref_control) {
+    if (st->ref_controls.empty()) {
         JSObjectRef obj = AsObject(env, js_object);
         JSObjectDeletePropertyForKey(env->ctx, obj, env->wrap_key, nullptr);
     }

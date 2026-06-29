@@ -80,11 +80,15 @@ void ExternalFinalize(JSObjectRef obj) {
     auto* st = static_cast<ExternalState*>(JSObjectGetPrivate(obj));
     if (st == nullptr)
         return;
-    // The anchor object was collected: empty any weak ref pointing at it, then
-    // defer the user finalizer out of GC (we must not re-enter JS here).
-    if (st->ref_control) {
-        st->ref_control->alive = false;
-        st->ref_control->value = nullptr;
+    // The anchor object was collected: empty every weak ref pointing at it
+    // FIRST, then defer the user finalizer out of GC (we must not re-enter JS
+    // here). Clearing before the deferral is what lets a wrap / add_finalizer
+    // finalizer — which runs later, on drain — observe sibling weak refs to the
+    // same object as already-empty, regardless of GC finalize order across
+    // arches (the bug test_reference exercises on arm64). AME-JSC-REFORDER-FIX
+    for (auto& rc : st->ref_controls) {
+        rc->alive = false;
+        rc->value = nullptr;
     }
     if (st->finalize_cb != nullptr && st->env != nullptr) {
         std::lock_guard<std::mutex> lk(st->env->finalizer_mu);

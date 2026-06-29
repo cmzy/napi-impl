@@ -65,13 +65,22 @@ struct RefControl {
 // pointer + optional finalizer, and/or a weak-reference control block. Used for
 // napi_create_external, the hidden holder attached to napi_wrap'd objects, and
 // the holder backing a weak napi_ref. When the holder is finalized (its anchor
-// object was collected) it flips ref_control->alive and enqueues finalize_cb.
+// object was collected) it flips each ref_controls entry to dead and enqueues finalize_cb.
 struct ExternalState {
     napi_env env = nullptr;
     void* data = nullptr;          // native pointer (external value / wrapped native)
     napi_finalize finalize_cb = nullptr;
     void* finalize_hint = nullptr;
-    std::shared_ptr<RefControl> ref_control;  // non-null iff this holder backs a weak ref
+    // Weak-ref control blocks whose target is THIS holder's anchor object. A
+    // single holder may back several refs — e.g. a napi_wrap'd object that also
+    // gets napi_create_reference calls: those refs attach their control here
+    // rather than on a separate holder. On finalize we clear ALL of them BEFORE
+    // deferring the wrap finalizer, so a wrap / napi_add_finalizer finalizer
+    // always observes sibling weak refs as already-empty — matching V8, which
+    // clears every weak ref to an object before running any of its finalizers.
+    // (A reference to an object with no wrap holder still gets its own dedicated
+    // holder with a single entry.) AME-JSC-REFORDER-FIX
+    std::vector<std::shared_ptr<RefControl>> ref_controls;
     // True for the GC-time "basic" finalizers registered by napi_wrap /
     // napi_add_finalizer: while one runs, calling a non-basic Node-API throws a
     // fatal error (Node's node_api_basic_finalize restriction). napi_create_external
