@@ -72,6 +72,21 @@ namespace v8impl {
         RefList *prev_ = nullptr;
     };
 
+    // True (per-thread) only while an napi_env is being torn down in
+    // `napi_env__::DeleteMe()`. During teardown `Reference::Finalize()` must free
+    // *userland* references too: the env is dying, so user code can never call
+    // `napi_delete_reference` on them again (that would be a UAF on a dead env),
+    // and node-api's default (only free kRuntime refs on teardown) otherwise
+    // leaks every un-deleted userland Reference for the life of the process —
+    // which accumulates under multi-`napi_env` embedding (engine churn). During
+    // ordinary GC finalization the flag stays false, preserving userland
+    // ownership (the user still holds a live napi_ref handle). Function-local
+    // thread_local → single instance across the DSO, header-safe.
+    inline bool &EnvTeardownFlag() {
+        thread_local bool tearing_down = false;
+        return tearing_down;
+    }
+
 } // end of namespace v8impl
 
 struct napi_env__ {
@@ -160,6 +175,11 @@ struct napi_env__ {
     }
 
     virtual void DeleteMe() {
+        // Mark teardown so Reference::Finalize() frees userland references too
+        // (env is dying — see EnvTeardownFlag()). Restored after, though `this`
+        // is deleted next; nested DeleteMe is not expected but handled safely.
+        bool prev_teardown = v8impl::EnvTeardownFlag();
+        v8impl::EnvTeardownFlag() = true;
         // First we must finalize those references that have `napi_finalizer`
         // callbacks. The reason is that addons might store other references which
         // they delete during their `napi_finalizer` callbacks. If we deleted such
@@ -167,6 +187,7 @@ struct napi_env__ {
         // `napi_finalizer` deleted them subsequently.
         v8impl::RefTracker::FinalizeAll(&finalizing_reflist);
         v8impl::RefTracker::FinalizeAll(&reflist);
+        v8impl::EnvTeardownFlag() = prev_teardown;
         delete this;
     }
 

@@ -116,7 +116,14 @@ namespace v8impl {
 
     void Reference::Finalize() {
         persistent_.Reset();
-        bool deleteMe = ownership_ == ReferenceOwnership::kRuntime;
+        // kRuntime refs are always freed by the runtime. Userland refs are the
+        // user's to delete via napi_delete_reference — EXCEPT during env teardown
+        // (EnvTeardownFlag), where the env is dying and the user can never delete
+        // them again: free them here to avoid leaking one Reference per un-deleted
+        // userland ref for the life of the process (accumulates under multi-env
+        // embedding). No double-free: napi_delete_reference unlinks first, so a
+        // ref already deleted by the user is off the reflist and never reaches here.
+        bool deleteMe = ownership_ == ReferenceOwnership::kRuntime || v8impl::EnvTeardownFlag();
         Unlink();
         CallUserFinalizer();
         if (deleteMe)
