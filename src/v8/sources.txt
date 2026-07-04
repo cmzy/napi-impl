@@ -15,6 +15,7 @@ sab.cc
 serialize.cc
 scope.cc
 script.cc
+script_cache.cc
 string.cc
 symbol.cc
 value.cc

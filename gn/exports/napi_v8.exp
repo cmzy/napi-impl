@@ -56,6 +56,7 @@ _napi_fast_unwrap
 _napi_fast_value_is_nullish
 _napi_fast_value_unwrap
 _napi_fast_wrap
+_napi_free_script_cache
 _napi_get_all_property_names
 _napi_get_and_clear_last_exception
 _napi_get_array_length
@@ -115,6 +116,7 @@ _napi_reject_deferred
 _napi_remove_wrap
 _napi_resolve_deferred
 _napi_run_script
+_napi_run_script_cached
 _napi_set_element
 _napi_set_instance_data
 _napi_set_named_property

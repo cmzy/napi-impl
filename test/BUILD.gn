@@ -86,6 +86,7 @@ foreach(t,
           "node_api_extras_gtest",
           "serialize_gtest",
           "multi_runtime_gtest",
+          "script_cache_gtest",
         ]) {
   executable(t) {
     testonly = true

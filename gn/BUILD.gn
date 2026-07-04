@@ -15,7 +15,8 @@ config("napi_flags") {
     "NAPI_EXPERIMENTAL",
     "BUILDING_NODE_EXTENSION",
     "NAPI_VERSION=10",       # expose node_api_* (v9/v10) symbols as extern "C"
-    "NAPI_HAS_FAST_CALL=1",  # V8 (GN) track takes the real fast-call path; non-V8 (CMake) does not
+    "NAPI_HAS_FAST_CALL=1",     # V8 (GN) track takes the real fast-call path; non-V8 (CMake) does not
+    "NAPI_HAS_SCRIPT_CACHE=1",  # V8 has a real code cache (src/v8/script_cache.cc); non-V8 defaults unless it opts in
   ]
   include_dirs = [
     "//napi/include",

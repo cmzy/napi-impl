@@ -49,6 +49,11 @@ EMBEDDING_COMMON = [
     "napi_fast_value_is_nullish",
     "napi_fast_get_buffersource",
     "napi_fast_options_get_data",
+    # Cross-engine compilation cache (napi/script_cache.h): real on V8 (code cache)
+    # and Hermes (HBC); JSC/QuickJS default to compile+run. Every backend defines
+    # it (real or via src/common/script_cache_fallback.cc), so it exports here.
+    "napi_run_script_cached",
+    "napi_free_script_cache",
 ]
 
 # V8-only embedding extensions (inspector + SharedArrayBuffer); other engines do

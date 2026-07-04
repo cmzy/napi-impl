@@ -3,3 +3,6 @@
 # the V8 build (real impl lives in src/v8/fast_call.cc) and the slow-equivalent
 # fallback on non-V8 backends.
 fast_call_fallback.cc
+# script_cache_fallback.cc self-guards on NAPI_HAS_SCRIPT_CACHE: empty TU where a
+# real cache exists (V8; opt-in Hermes), default compile+run on JSC/QuickJS.
+script_cache_fallback.cc
