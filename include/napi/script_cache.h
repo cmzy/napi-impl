@@ -4,8 +4,9 @@
 // engine-specific compilation cache, so an embedder can skip parse/compile on
 // repeated runs of the same script (engine startup, worker prelude, …). Same
 // engine-agnostic shape as napi/fast_call.h: the SAME source compiles on every
-// backend; real caching on V8 (ScriptCompiler code cache) and Hermes (HBC
-// bytecode); JSC and QuickJS fall back to a plain compile+run (no cache).
+// backend. Real caching on V8 (ScriptCompiler code cache); JSC / QuickJS / Hermes
+// currently fall back to a plain compile+run (no cache). A Hermes HBC-bytecode
+// cache can opt in later (define NAPI_HAS_SCRIPT_CACHE + a real backend TU).
 //
 // The cache blob is OPAQUE and ENGINE-SPECIFIC — a V8 blob cannot be consumed by
 // Hermes and vice versa. Store and reuse it per engine (an embedder builds with
