@@ -220,6 +220,10 @@ napi_status NAPI_CDECL napi_define_fast_accessor(napi_env env, napi_value object
 napi_status NAPI_CDECL napi_fast_wrap(napi_env env, napi_value js_object, void* native, const void* type_tag,
                                       napi_finalize finalize_cb, void* finalize_hint, napi_ref* result) {
     CHECK_ENV(env);
+    // CHECK_ENV (not CHECK_ENV_NOT_IN_GC) so it does not self-scope via the macro;
+    // v8impl::Wrap + the type-tag Private read the current isolate/context, so
+    // enter them here (needed for same-thread multi-runtime).
+    v8impl::CallScope __ame_call_scope(env);
     // native and type_tag are stored as V8 aligned pointers (the low bit is
     // reserved). Reject an unaligned input cleanly instead of letting V8 raise a
     // fatal "Unaligned pointer" — e.g. a `static const char` tag sentinel, which

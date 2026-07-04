@@ -229,6 +229,26 @@ protected:
     virtual ~napi_env__() = default;
 };
 
+namespace v8impl {
+
+    // Per-call self-scoping (see test/multi_runtime_gtest.cc). Makes env->isolate
+    // the current isolate and enters env->context() for the duration of one napi
+    // entry call, so multiple runtimes (isolates) can be driven on ONE thread and
+    // envs can be destroyed in any order. It deliberately does NOT open a
+    // HandleScope: the host's own (root / per-frame) handle scopes keep owning the
+    // napi_values they create. Re-entering an already-current isolate/context is
+    // legal and cheap (counted enter/exit), so nested napi calls are safe.
+    class CallScope {
+    public:
+        explicit CallScope(napi_env env) : isolate_scope_(env->isolate), context_scope_(env->context()) {}
+
+    private:
+        v8::Isolate::Scope isolate_scope_;
+        v8::Context::Scope context_scope_;
+    };
+
+} // namespace v8impl
+
 inline napi_status napi_clear_last_error(node_api_basic_env basic_env) {
     napi_env env = const_cast<napi_env>(basic_env);
     env->last_error.error_code = napi_ok;
@@ -272,7 +292,8 @@ inline napi_status napi_set_last_error(node_api_basic_env basic_env, napi_status
     do {                                                                                                               \
         CHECK_ENV((env));                                                                                              \
         (env)->CheckGCAccess();                                                                                        \
-    } while (0)
+    } while (0);                                                                                                        \
+    v8impl::CallScope __ame_call_scope((env))
 
 #define CHECK_ARG(env, arg) RETURN_STATUS_IF_FALSE((env), ((arg) != nullptr), napi_invalid_arg)
 

@@ -77,9 +77,15 @@ namespace napi_v8 {
             inspector_ = v8_inspector::V8Inspector::create(iso, this);
             channel_ = std::make_unique<ChannelImpl>(this);
 
-            // Register the context with the inspector.
-            v8_inspector::V8ContextInfo info(ctx, /*contextGroupId=*/1, Sv(name));
-            inspector_->contextCreated(info);
+            // Register the context with the inspector. enter-once was removed, so
+            // enter the isolate + a handle scope here (contextCreated materializes
+            // the context Local).
+            {
+                v8::Isolate::Scope is(iso);
+                v8::HandleScope hs(iso);
+                v8_inspector::V8ContextInfo info(context_.Get(iso), /*contextGroupId=*/1, Sv(name));
+                inspector_->contextCreated(info);
+            }
         }
 
         InspectorBridge::~InspectorBridge() {
@@ -93,6 +99,7 @@ namespace napi_v8 {
                 // must be active. napi_v8_inspector_stop() runs after the host has
                 // closed its own handle scope; the isolate is still entered (the env
                 // is destroyed later), so open a scope here.
+                v8::Isolate::Scope is(isolate_);
                 v8::HandleScope hs(isolate_);
                 inspector_->contextDestroyed(context_.Get(isolate_));
             }
@@ -169,6 +176,7 @@ namespace napi_v8 {
                 }
                 // We are the isolate-owning thread: no v8::Locker, just scopes.
                 if (session_) {
+                    v8::Isolate::Scope iscope(isolate_);
                     v8::HandleScope hscope(isolate_);
                     v8::Context::Scope cscope(context_.Get(isolate_));
                     session_->dispatchProtocolMessage(Sv(msg));

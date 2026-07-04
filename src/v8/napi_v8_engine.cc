@@ -31,9 +31,15 @@ struct napi_runtime__ {
     std::unique_ptr<v8::ArrayBuffer::Allocator> allocator;
 };
 
-// Process-singleton V8 platform pointer, captured at napi_create_platform, used
-// by napi_v8_run_event_loop_tasks to pump the foreground task runner.
+// Process-singleton V8 platform. V8::Initialize/InitializePlatform are
+// once-per-process (a second call aborts), so napi_create_platform is made
+// idempotent: the platform is owned globally and refcounted across
+// create/destroy pairs, letting a host create it more than once (each extra
+// call hands back a non-owning handle sharing the same platform). g_v8_platform
+// is the raw pointer napi_v8_run_event_loop_tasks pumps.
+static std::unique_ptr<v8::Platform> g_owned_platform;
 static v8::Platform *g_v8_platform = nullptr;
+static int g_platform_refcount = 0;
 
 // ---- Concrete env subclass ------------------------------------------------
 
@@ -57,6 +63,9 @@ namespace {
         void CallFinalizer(napi_finalize cb, void *data, void *hint) override {
             if (cb == nullptr)
                 return;
+            // enter-once was removed: a finalizer (from the host tick or env
+            // teardown) may run with no isolate entered — enter it here.
+            v8::Isolate::Scope isolate_scope(isolate);
             v8::HandleScope handle_scope(isolate);
             v8::Local<v8::Context> ctx = context();
             v8::Context::Scope context_scope(ctx);
@@ -162,21 +171,27 @@ napi_status NAPI_CDECL napi_create_platform(int argc, char **argv, int exec_argc
     if (result == nullptr)
         return napi_invalid_arg;
     auto *p = new napi_platform__();
-    // Baseline flags (kept for back-compat): expose gc() for tests, staged harmony.
-    const char kFlags[] = "--expose-gc --harmony";
-    v8::V8::SetFlagsFromString(kFlags, sizeof(kFlags) - 1);
-    // Honor host-supplied V8 flags passed via argv (e.g. iOS --jitless, heap
-    // limits). argv[0] is the program name; SetFlagsFromCommandLine parses
-    // argv[1..]. Must run before V8::Initialize (it does). keep_flags=false so
-    // recognized flags are consumed; unknown ones are left in argv (ignored).
-    if (argc > 0 && argv != nullptr) {
-        int ac = argc;
-        v8::V8::SetFlagsFromCommandLine(&ac, argv, /*remove_flags=*/false);
+    if (g_platform_refcount == 0) {
+        // First platform for this process: init V8 exactly once.
+        // Baseline flags (kept for back-compat): expose gc() for tests, staged harmony.
+        const char kFlags[] = "--expose-gc --harmony";
+        v8::V8::SetFlagsFromString(kFlags, sizeof(kFlags) - 1);
+        // Honor host-supplied V8 flags passed via argv (e.g. iOS --jitless, heap
+        // limits). argv[0] is the program name; SetFlagsFromCommandLine parses
+        // argv[1..]. Must run before V8::Initialize (it does). keep_flags=false so
+        // recognized flags are consumed; unknown ones are left in argv (ignored).
+        if (argc > 0 && argv != nullptr) {
+            int ac = argc;
+            v8::V8::SetFlagsFromCommandLine(&ac, argv, /*remove_flags=*/false);
+        }
+        g_owned_platform = v8::platform::NewDefaultPlatform();
+        g_v8_platform = g_owned_platform.get(); // for napi_v8_run_event_loop_tasks
+        v8::V8::InitializePlatform(g_owned_platform.get());
+        v8::V8::Initialize();
     }
-    p->platform = v8::platform::NewDefaultPlatform();
-    g_v8_platform = p->platform.get(); // for napi_v8_run_event_loop_tasks
-    v8::V8::InitializePlatform(p->platform.get());
-    v8::V8::Initialize();
+    // else: reuse the already-initialized process platform; `p` is a non-owning
+    // handle. Extra argv/flags are ignored (V8 is already up).
+    ++g_platform_refcount;
     (void) exec_argc;
     (void) exec_argv;
     (void) err_handler;
@@ -188,8 +203,13 @@ napi_status NAPI_CDECL napi_create_platform(int argc, char **argv, int exec_argc
 napi_status NAPI_CDECL napi_destroy_platform(napi_platform platform) {
     if (platform == nullptr)
         return napi_invalid_arg;
-    v8::V8::Dispose();
-    v8::V8::DisposePlatform();
+    // Tear down V8 only when the last platform handle is destroyed.
+    if (g_platform_refcount > 0 && --g_platform_refcount == 0) {
+        v8::V8::Dispose();
+        v8::V8::DisposePlatform();
+        g_owned_platform.reset();
+        g_v8_platform = nullptr;
+    }
     delete platform;
     return napi_ok;
 }
@@ -227,15 +247,19 @@ napi_status NAPI_CDECL napi_create_env(napi_runtime runtime, napi_env *result) {
     if (runtime == nullptr || result == nullptr)
         return napi_invalid_arg;
     v8::Isolate *isolate = runtime->isolate;
-    isolate->Enter();
+    // B 档: scope the isolate/context only for context creation + env
+    // construction. The isolate is NOT left entered — every napi entry re-enters
+    // its own isolate+context per call (v8impl::CallScope), which is what lets
+    // multiple runtimes share one thread and be torn down in any order. (Formerly
+    // this did a persistent isolate->Enter()+ctx->Enter() left until destroy.)
+    v8::Isolate::Scope isolate_scope(isolate);
     v8::HandleScope hs(isolate);
     v8::Local<v8::Context> ctx = v8::Context::New(isolate);
-    if (ctx.IsEmpty()) {
-        isolate->Exit();
+    if (ctx.IsEmpty())
         return napi_generic_failure;
-    }
-    // Enter the context so napi_get_global etc. resolve to ours.
-    ctx->Enter();
+    // Context entered only while the napi_env__ ctor runs (it reads
+    // Isolate::GetCurrent(), valid inside isolate_scope).
+    v8::Context::Scope ctx_scope(ctx);
     auto *env = new EmbedEnv(ctx, NAPI_VERSION);
     *result = env;
     return napi_ok;
@@ -245,18 +269,29 @@ napi_status NAPI_CDECL napi_destroy_env(napi_env env) {
     if (env == nullptr)
         return napi_invalid_arg;
     v8::Isolate *iso = env->isolate;
-    {
-        v8::HandleScope hs(iso);
-        env->context()->Exit();
-    }
+    // Unref() -> DeleteMe() runs finalizers; each self-scopes its own context via
+    // CallFinalizer. Enter the isolate + a handle scope for teardown, but do NOT
+    // hold a Context::Scope across Unref(): env->context() aliases the env's own
+    // Global<Context> (PersistentToLocal reinterpret), which delete-this destroys
+    // — a Context::Scope outliving the env would then Exit() a freed handle
+    // ("Cannot exit non-entered context"). No isolate/context Exit is owed
+    // (enter-once was removed, so the env was never left entered).
+    v8::Isolate::Scope isolate_scope(iso);
+    v8::HandleScope hs(iso);
     env->Unref(); // matches initial refs=1 from napi_env__ ctor; triggers DeleteMe
-    iso->Exit();
     return napi_ok;
 }
 
 napi_status NAPI_CDECL napi_v8_run_event_loop_tasks(napi_env env) {
     if (env == nullptr)
         return napi_invalid_arg;
+    // enter-once was removed, so the host may call this with no isolate entered.
+    // Self-scope: enter the isolate + a handle scope + the context for the pump
+    // (PumpMessageLoop passes the isolate explicitly, but finalizers and the
+    // inspector tick hook create handles / call into JS).
+    v8::Isolate::Scope isolate_scope(env->isolate);
+    v8::HandleScope hs(env->isolate);
+    v8::Context::Scope ctx_scope(env->context());
     // Single host-driven "event-loop tick" hook. This bare embedding has no
     // libuv loop, so the host (AmeCanvas event loop) must call this at a safe
     // point — isolate + context entered, a handle scope open, not inside GC.
