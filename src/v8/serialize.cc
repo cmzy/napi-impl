@@ -9,8 +9,10 @@
 #include "js_native_api_v8_impl.h"
 
 #include <cstdlib>  // ::free
-#include <utility>  // std::pair
+#include <memory>   // std::shared_ptr (backing-store transfer)
+#include <utility>  // std::pair, std::move
 
+#include "v8-array-buffer.h"  // v8::ArrayBuffer / v8::BackingStore (transfer)
 #include "v8-context.h"
 #include "v8-value-serializer.h"
 
@@ -88,4 +90,62 @@ napi_status NAPI_CDECL napi_v8_deserialize(napi_env env, const uint8_t *data,
     }
     *result = v8impl::JsValueFromV8LocalValue(handle_scope.Escape(v8_result));
     return GET_RETURN_STATUS(env);
+}
+
+// ---------------------------------------------------------------------------
+// ArrayBuffer backing-store transfer (zero-copy) — see serialize.h.
+// Backed by V8's isolate-independent BackingStore (shared_ptr): the source AB is
+// detached but the store survives (our ref keeps it alive), then adopted into a
+// new AB in the same or another isolate — no byte copy.
+
+struct napi_v8_backing_store__ {
+    std::shared_ptr<v8::BackingStore> store;
+};
+
+napi_status NAPI_CDECL napi_v8_take_backing_store(napi_env env, napi_value arraybuffer,
+                                                  napi_v8_backing_store *out) {
+    CHECK_ENV_NOT_IN_GC(env);
+    CHECK_ARG(env, arraybuffer);
+    CHECK_ARG(env, out);
+    *out = nullptr;
+
+    v8::Local<v8::Value> value = v8impl::V8LocalValueFromJsValue(arraybuffer);
+    // A SharedArrayBuffer is not an ArrayBuffer (IsArrayBuffer==false) and is
+    // shared, not transferred — it falls out here as napi_arraybuffer_expected.
+    RETURN_STATUS_IF_FALSE(env, value->IsArrayBuffer(), napi_arraybuffer_expected);
+
+    v8::Local<v8::ArrayBuffer> arr = value.As<v8::ArrayBuffer>();
+    // Reject non-detachable (WASM memory) AND already-detached buffers: the latter
+    // has no bytes to take, yet V8's IsDetachable() can still report true for it.
+    RETURN_STATUS_IF_FALSE(env, arr->IsDetachable() && !arr->WasDetached(),
+                           napi_detachable_arraybuffer_expected);
+
+    // Grab a strong ref to the backing store BEFORE detaching: Detach() drops the
+    // AB's own ref, but ours keeps the bytes alive for adoption elsewhere.
+    std::shared_ptr<v8::BackingStore> bs = arr->GetBackingStore();
+    if (arr->Detach(v8::Local<v8::Value>()).IsNothing())
+        return napi_set_last_error(env, napi_detachable_arraybuffer_expected);
+
+    *out = new napi_v8_backing_store__{std::move(bs)};
+    return napi_clear_last_error(env);
+}
+
+napi_status NAPI_CDECL napi_v8_adopt_backing_store(napi_env env, napi_v8_backing_store store,
+                                                   napi_value *out_arraybuffer) {
+    NAPI_PREAMBLE(env);
+    CHECK_ARG(env, out_arraybuffer);
+    RETURN_STATUS_IF_FALSE(env, store != nullptr && store->store, napi_invalid_arg);
+
+    // V8 takes its own ref to the shared backing store (zero copy — same bytes).
+    v8::Local<v8::ArrayBuffer> ab = v8::ArrayBuffer::New(env->isolate, store->store);
+    *out_arraybuffer = v8impl::JsValueFromV8LocalValue(ab);
+    delete store;  // consumed: releases our ref; V8 now owns a ref, bytes stay alive
+    return GET_RETURN_STATUS(env);
+}
+
+napi_status NAPI_CDECL napi_v8_free_backing_store(napi_v8_backing_store store) {
+    // env-less: a backing store is isolate-independent. delete of NULL is a no-op;
+    // otherwise the shared_ptr releases, freeing the bytes when it was the last ref.
+    delete store;
+    return napi_ok;
 }

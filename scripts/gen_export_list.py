@@ -82,6 +82,12 @@ EMBEDDING_V8_SERIALIZE = [
     "napi_v8_serialize",
     "napi_v8_deserialize",
     "napi_v8_free_serialized_data",
+    # ArrayBuffer backing-store transfer (zero-copy). V8-only: JSC pins on
+    # bytes-pointer access and Hermes ties AB memory to its runtime, so neither
+    # can move a backing store to another isolate — see serialize.h.
+    "napi_v8_take_backing_store",
+    "napi_v8_adopt_backing_store",
+    "napi_v8_free_backing_store",
 ]
 
 # Back-compat alias (the V8 path used this single list).
