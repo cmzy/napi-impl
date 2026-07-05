@@ -101,8 +101,12 @@ jobs:
 
       - name: Run js-native-api suite on simulator (baseline gate)
         run: |
+          # The iOS simulator runs JIT through the host but is markedly slower than
+          # a native run — test_reference (heavy Reference/finalizer/GC churn) needs
+          # well over the 30s default. Give a generous per-test timeout so a slow
+          # simulator doesn't flake the baseline gate (macOS runs natively, keeps 30s).
           python3 scripts/run_tests.py --engine=jsc --platform=ios_sim --arch=arm64 \
-            --keep-going --min-pass "${JSC_MIN_PASS}"
+            --timeout 180 --keep-going --min-pass "${JSC_MIN_PASS}"
 
   package:
     name: Static lib + .xcframework (macOS + iOS device + iOS simulator)
