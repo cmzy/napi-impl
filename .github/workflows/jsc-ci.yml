@@ -17,7 +17,7 @@ name: JSC NAPI CI
 
 on:
   push:
-    branches: [main, 'worktree-jsc-napi']
+    branches: [main]
   pull_request:
   workflow_dispatch:
 
