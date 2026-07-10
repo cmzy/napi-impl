@@ -105,6 +105,34 @@ napi_status NAPI_CDECL napi_destroy_runtime(napi_runtime runtime) {  // AME-JSC-
 
 // ---- env ------------------------------------------------------------------
 
+// globalThis.gc() -> JSGarbageCollect: parity with the V8 backend, whose
+// napi_create_platform passes "--expose-gc" so V8 installs globalThis.gc
+// unconditionally (napi_v8_engine.cc). JSC has no such flag, so we install the
+// same global here. Lets embedders/tests force a synchronous full collection so
+// GC-driven finalizers (napi_wrap / external / ArrayBuffer deallocators) run
+// deterministically instead of at the engine's lazy discretion — the host's
+// leak/lifecycle tests rely on `if (globalThis.gc) gc()`. Diagnostic-only and
+// harmless in production, same rationale as V8's always-on --expose-gc.
+// JSSynchronousGarbageCollectForDebugging forces a FULL synchronous collection
+// (JSC SPI, exported by the system JavaScriptCore.framework; the public
+// JSGarbageCollect is advisory/eden-biased and does not reliably reclaim +
+// enqueue finalizers for objects freed this turn — the host's leak tests need
+// deterministic reclamation). Declared extern here since it lives in a private
+// header (JSContextRefPrivate.h) not always in the SDK; the symbol is present.
+extern "C" void JSSynchronousGarbageCollectForDebugging(JSContextRef);
+static JSValueRef napi_jsc_gc_callback(JSContextRef ctx, JSObjectRef, JSObjectRef, size_t, const JSValueRef[],
+                                       JSValueRef*) {
+    JSSynchronousGarbageCollectForDebugging(ctx);
+    return JSValueMakeUndefined(ctx);
+}
+static void napi_jsc_expose_gc(JSGlobalContextRef ctx) {
+    JSObjectRef global = JSContextGetGlobalObject(ctx);
+    JSStringRef name = JSStringCreateWithUTF8CString("gc");
+    JSObjectRef fn = JSObjectMakeFunctionWithCallback(ctx, name, napi_jsc_gc_callback);
+    JSObjectSetProperty(ctx, global, name, fn, kJSPropertyAttributeDontEnum, nullptr);
+    JSStringRelease(name);
+}
+
 napi_status NAPI_CDECL napi_create_env(napi_runtime runtime, napi_env* result) {
     if (runtime == nullptr || result == nullptr)
         return napi_invalid_arg;
@@ -118,6 +146,7 @@ napi_status NAPI_CDECL napi_create_env(napi_runtime runtime, napi_env* result) {
         JSGlobalContextRelease(ctx);  // env_new retained its own reference
         if (env == nullptr)
             return napi_generic_failure;
+        napi_jsc_expose_gc(env->ctx);  // globalThis.gc()（镜像 V8 --expose-gc）
         env->embed_owner = runtime;
         runtime->env = env;
     }

@@ -115,6 +115,8 @@ _napi_reject_deferred
 _napi_remove_wrap
 _napi_resolve_deferred
 _napi_run_script
+_napi_run_script_cached
+_napi_free_script_cache
 _napi_set_element
 _napi_set_instance_data
 _napi_set_named_property
