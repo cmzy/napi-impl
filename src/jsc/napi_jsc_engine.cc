@@ -8,6 +8,7 @@
 // for libnapi_v8 / libnapi_hermes: the host uses the identical embedding API +
 // standard napi_* surface across engines.
 
+#include <atomic>
 #include <cstdlib>
 
 #include <JavaScriptCore/JavaScript.h>
@@ -15,6 +16,16 @@
 #include "napi_v8/embedding.h"
 
 #include "js_native_api_jsc.h"
+
+// JSContextGroupSetExecutionTimeLimit lives in JavaScriptCore's private header
+// (JSContextRefPrivate.h), not shipped with the system framework — but the symbol
+// is exported by JavaScriptCore.framework. Forward-declare the stable private
+// prototype (long-standing WebKit runaway-script API) and link against it.
+extern "C" {
+typedef bool (*JSShouldTerminateCallback)(JSContextRef ctx, void *context);
+void JSContextGroupSetExecutionTimeLimit(JSContextGroupRef group, double limit,
+                                         JSShouldTerminateCallback callback, void *context);
+}
 
 // JSC disables SharedArrayBuffer by default (Spectre mitigation). The napi_v8/
 // sab.h extension needs it, so enable the engine option before JSC initializes
@@ -38,7 +49,42 @@ struct napi_runtime__ {
     JSContextGroupRef group = nullptr;
     napi_platform platform = nullptr;
     napi_env env = nullptr;  // the single env owned by this runtime (lazily created)
+    // napi_v8_terminate_execution flag. JSC has no lock-free "terminate now" C API:
+    // JSContextGroupSetExecutionTimeLimit acquires the JSLock, which a running (esp.
+    // runaway `while(true){}`) script holds → calling it on demand from another thread
+    // deadlocks. Instead we arm the watchdog ONCE at runtime creation (JSLock free then)
+    // with a small poll interval + a callback that reads this atomic flag; terminate
+    // just sets the flag (no JSLock), and the already-armed watchdog fires within the
+    // interval and terminates. Checked at VMTraps points (loop back-edges).
+    std::atomic<bool> terminate_requested{false};
 };
+
+namespace {
+    // Watchdog poll interval: a script running longer than this hits the callback at the
+    // next VMTraps checkpoint. Small enough for responsive teardown (~50 ms), large enough
+    // that sub-interval scripts (the norm) never trigger it → steady-state cost is a
+    // background timer only.
+    constexpr double kJscWatchdogPollSeconds = 0.05;
+
+    // Watchdog callback (invoked by JSC's watchdog at an execution checkpoint once the
+    // poll interval elapses): terminate iff the host requested it. **JSC fires the callback
+    // only ONCE per arming** (it does NOT auto-re-arm on a false return — verified by
+    // instrumentation: without the re-arm below the callback fires exactly once, so a
+    // terminate flag set afterwards is never observed and a runaway loop hangs forever).
+    // So re-arm here before returning false, to keep polling the flag for the script's
+    // lifetime. This runs on the JS thread holding the JSLock; the SetExecutionTimeLimit's
+    // JSLockHolder is a recursive same-thread acquire (no deadlock — unlike an on-demand
+    // cross-thread call, which is exactly the deadlock this whole design avoids).
+    bool JscTerminateCheck(JSContextRef, void *context) {
+        auto *r = static_cast<napi_runtime>(context);
+        if (r == nullptr)
+            return false;
+        if (r->terminate_requested.load(std::memory_order_acquire))
+            return true;
+        JSContextGroupSetExecutionTimeLimit(r->group, kJscWatchdogPollSeconds, JscTerminateCheck, r);
+        return false;
+    }
+} // namespace
 
 // ---- platform -------------------------------------------------------------
 
@@ -75,6 +121,12 @@ napi_status NAPI_CDECL napi_create_runtime(napi_platform platform, napi_runtime*
         delete r;
         return napi_generic_failure;
     }
+    // Arm the watchdog now (no script running → the JSLock this acquires is free, no
+    // deadlock). 50 ms poll: a script running longer than this invokes JscTerminateCheck
+    // at the next VMTraps checkpoint; it returns false (re-arm) until a host terminate
+    // request flips the flag, then terminates within ~50 ms. Scripts shorter than 50 ms
+    // never trigger it, so steady-state overhead is a background timer only.
+    JSContextGroupSetExecutionTimeLimit(r->group, kJscWatchdogPollSeconds, JscTerminateCheck, r);
     *result = r;
     return napi_ok;
 }
@@ -194,33 +246,14 @@ napi_status NAPI_CDECL napi_v8_run_event_loop_tasks(napi_env env) {
     return napi_ok;
 }
 
-// JSContextGroupSetExecutionTimeLimit lives in JavaScriptCore's private header
-// (JSContextRefPrivate.h), not shipped with the system framework — but the symbol
-// is exported by JavaScriptCore.framework. Forward-declare the stable private
-// prototype and link against it (long-standing WebKit runaway-script API).
-extern "C" {
-typedef bool (*JSShouldTerminateCallback)(JSContextRef ctx, void *context);
-void JSContextGroupSetExecutionTimeLimit(JSContextGroupRef group, double limit,
-                                         JSShouldTerminateCallback callback, void *context);
-}
-
-namespace {
-    // Watchdog callback: always terminate. Returning true throws a non-catchable
-    // TerminatedExecutionException that unwinds the running script.
-    bool JscAlwaysTerminate(JSContextRef, void *) { return true; }
-} // namespace
-
 napi_status NAPI_CDECL napi_v8_terminate_execution(napi_env env) {
     if (env == nullptr || env->embed_owner == nullptr)
         return napi_invalid_arg;
     auto *owner = static_cast<napi_runtime>(env->embed_owner);
-    if (owner->group == nullptr)
-        return napi_invalid_arg;
-    // Arm JSC's watchdog with a zero time limit: the next VMTraps check (polled at
-    // loop back-edges — reaches even `while (true) {}`) invokes the callback, which
-    // returns true → the script is terminated. The watchdog is armed cross-thread
-    // (its timer thread sets the running thread's traps flag), which is exactly the
-    // runaway-worker-teardown use.
-    JSContextGroupSetExecutionTimeLimit(owner->group, 0.0, JscAlwaysTerminate, nullptr);
+    // Set the flag only — NO JSLock (the runaway script holds it; acquiring it here,
+    // as JSContextGroupSetExecutionTimeLimit does, would deadlock). The watchdog armed
+    // at napi_create_runtime is already running; its next checkpoint reads the flag and
+    // terminates the script. Thread-safe: called from the teardown thread.
+    owner->terminate_requested.store(true, std::memory_order_release);
     return napi_ok;
 }
