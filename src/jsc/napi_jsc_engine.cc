@@ -193,3 +193,34 @@ napi_status NAPI_CDECL napi_v8_run_event_loop_tasks(napi_env env) {
     napi_jsc_drain_finalizers(env);
     return napi_ok;
 }
+
+// JSContextGroupSetExecutionTimeLimit lives in JavaScriptCore's private header
+// (JSContextRefPrivate.h), not shipped with the system framework — but the symbol
+// is exported by JavaScriptCore.framework. Forward-declare the stable private
+// prototype and link against it (long-standing WebKit runaway-script API).
+extern "C" {
+typedef bool (*JSShouldTerminateCallback)(JSContextRef ctx, void *context);
+void JSContextGroupSetExecutionTimeLimit(JSContextGroupRef group, double limit,
+                                         JSShouldTerminateCallback callback, void *context);
+}
+
+namespace {
+    // Watchdog callback: always terminate. Returning true throws a non-catchable
+    // TerminatedExecutionException that unwinds the running script.
+    bool JscAlwaysTerminate(JSContextRef, void *) { return true; }
+} // namespace
+
+napi_status NAPI_CDECL napi_v8_terminate_execution(napi_env env) {
+    if (env == nullptr || env->embed_owner == nullptr)
+        return napi_invalid_arg;
+    auto *owner = static_cast<napi_runtime>(env->embed_owner);
+    if (owner->group == nullptr)
+        return napi_invalid_arg;
+    // Arm JSC's watchdog with a zero time limit: the next VMTraps check (polled at
+    // loop back-edges — reaches even `while (true) {}`) invokes the callback, which
+    // returns true → the script is terminated. The watchdog is armed cross-thread
+    // (its timer thread sets the running thread's traps flag), which is exactly the
+    // runaway-worker-teardown use.
+    JSContextGroupSetExecutionTimeLimit(owner->group, 0.0, JscAlwaysTerminate, nullptr);
+    return napi_ok;
+}

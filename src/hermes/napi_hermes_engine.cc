@@ -295,3 +295,26 @@ napi_status NAPI_CDECL napi_v8_run_event_loop_tasks(napi_env env) {
     }
     return napi_ok;
 }
+
+napi_status NAPI_CDECL napi_v8_terminate_execution(napi_env env) {
+    if (env == nullptr)
+        return napi_invalid_arg;
+    napi_runtime owner = nullptr;
+    {
+        std::lock_guard<std::mutex> lk(g_envs_mu);
+        auto it = EnvMap().find(env);
+        if (it != EnvMap().end())
+            owner = it->second.runtime;
+    }
+    if (owner == nullptr || !owner->runtime)
+        return napi_invalid_arg;
+    // Set Hermes' async-break flag (thread-safe atomic): the interpreter checks it at
+    // loop back-edges and throws a timeout error that unwinds. NOTE: this only reaches
+    // a tight `while (true) {}` when the runtime/bytecode is built with async-break
+    // checks (RuntimeConfig asyncBreakCheckInEval / emitAsyncBreakCheck); the default
+    // bare embedding here does not enable them, so this is best-effort — it interrupts
+    // at cooperative yields but not a check-free hot loop. (Hermes is not an AmeCanvas
+    // release engine; V8/JSC are the terminate-capable production backends.)
+    owner->runtime->triggerTimeoutAsyncBreak();
+    return napi_ok;
+}

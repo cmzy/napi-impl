@@ -144,6 +144,7 @@ _napi_v8_inspector_wait_for_connection
 _napi_v8_run_event_loop_tasks
 _napi_v8_serialize
 _napi_v8_take_backing_store
+_napi_v8_terminate_execution
 _napi_wrap
 _node_api_create_external_sharedarraybuffer
 _node_api_create_external_string_latin1

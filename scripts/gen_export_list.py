@@ -35,6 +35,10 @@ EMBEDDING_COMMON = [
     "napi_destroy_env",
     # Host-driven event-loop tick: pump foreground tasks + drain finalizers.
     "napi_v8_run_event_loop_tasks",
+    # Interrupt JS execution on an env's isolate (runaway-worker teardown). Every
+    # backend implements it with its own mechanism (V8 TerminateExecution / JSC
+    # execution-time-limit / Hermes async-break / QuickJS interrupt handler).
+    "napi_v8_terminate_execution",
     # node_api_* extensions we implement beyond js_native_api proper.
     "node_api_post_finalizer",
     # Fast-call surface (napi/fast_call.h). Cross-engine: V8 takes the real fast

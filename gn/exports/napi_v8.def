@@ -145,6 +145,7 @@ EXPORTS
   napi_v8_run_event_loop_tasks
   napi_v8_serialize
   napi_v8_take_backing_store
+  napi_v8_terminate_execution
   napi_wrap
   node_api_create_external_sharedarraybuffer
   node_api_create_external_string_latin1

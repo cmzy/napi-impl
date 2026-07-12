@@ -58,6 +58,7 @@
     napi_fast_value_is_nullish;
     napi_fast_value_unwrap;
     napi_fast_wrap;
+    napi_free_script_cache;
     napi_get_all_property_names;
     napi_get_and_clear_last_exception;
     napi_get_array_length;
@@ -117,6 +118,7 @@
     napi_remove_wrap;
     napi_resolve_deferred;
     napi_run_script;
+    napi_run_script_cached;
     napi_set_element;
     napi_set_instance_data;
     napi_set_named_property;
@@ -130,6 +132,7 @@
     napi_typeof;
     napi_unwrap;
     napi_v8_run_event_loop_tasks;
+    napi_v8_terminate_execution;
     napi_wrap;
     node_api_create_external_string_latin1;
     node_api_create_external_string_utf16;

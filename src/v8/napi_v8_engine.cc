@@ -318,4 +318,17 @@ napi_status NAPI_CDECL napi_v8_run_event_loop_tasks(napi_env env) {
     return napi_ok;
 }
 
+napi_status NAPI_CDECL napi_v8_terminate_execution(napi_env env) {
+    if (env == nullptr || env->isolate == nullptr)
+        return napi_invalid_arg;
+    // v8::Isolate::TerminateExecution is thread-safe by contract: it sets the isolate's
+    // interrupt/terminate flag, checked at stack-guard points (function entry + loop
+    // back-edges), so JS running on ANOTHER thread — including `while (true) {}` — is
+    // unwound with a non-catchable termination. Do NOT enter the isolate here (it may be
+    // busy on its own thread; entering from a second thread would deadlock/abort). Just
+    // arm the flag.
+    env->isolate->TerminateExecution();
+    return napi_ok;
+}
+
 } // extern "C"

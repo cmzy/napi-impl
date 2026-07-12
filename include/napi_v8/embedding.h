@@ -56,6 +56,19 @@ NAPI_EXTERN napi_status NAPI_CDECL napi_destroy_env(napi_env env);
 // object is finalized only at env teardown.
 NAPI_EXTERN napi_status NAPI_CDECL napi_v8_run_event_loop_tasks(napi_env env);
 
+// Interrupt JavaScript execution currently running on `env`'s isolate.
+//
+// Requests V8 to terminate whatever JS is executing (v8::Isolate::TerminateExecution):
+// a non-catchable termination unwinds the stack, and V8's interrupt flag is checked at
+// stack-guard points (function entry, loop back-edges) so even an unbounded loop such as
+// `while (true) {}` is interrupted. **Thread-safe**: may be called from a thread other
+// than the one running the isolate — the intended use is a host tearing down a worker to
+// break it out of a runaway script so the worker thread can be joined (otherwise a
+// cooperative-only shutdown hangs forever). After termination fires, the isolate is left
+// in the "terminating" state; the host typically proceeds to destroy the env/runtime.
+// (If the isolate is idle, this arms the flag so the next JS entry terminates immediately.)
+NAPI_EXTERN napi_status NAPI_CDECL napi_v8_terminate_execution(napi_env env);
+
 #ifdef __cplusplus
 }  // extern "C"
 #endif

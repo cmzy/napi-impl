@@ -56,6 +56,7 @@ _napi_fast_unwrap
 _napi_fast_value_is_nullish
 _napi_fast_value_unwrap
 _napi_fast_wrap
+_napi_free_script_cache
 _napi_get_all_property_names
 _napi_get_and_clear_last_exception
 _napi_get_array_length
@@ -116,7 +117,6 @@ _napi_remove_wrap
 _napi_resolve_deferred
 _napi_run_script
 _napi_run_script_cached
-_napi_free_script_cache
 _napi_set_element
 _napi_set_instance_data
 _napi_set_named_property
@@ -138,6 +138,7 @@ _napi_v8_inspector_stop
 _napi_v8_inspector_wait
 _napi_v8_inspector_wait_for_connection
 _napi_v8_run_event_loop_tasks
+_napi_v8_terminate_execution
 _napi_wrap
 _node_api_create_external_sharedarraybuffer
 _node_api_create_external_string_latin1
