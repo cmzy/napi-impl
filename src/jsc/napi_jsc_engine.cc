@@ -257,3 +257,24 @@ napi_status NAPI_CDECL napi_v8_terminate_execution(napi_env env) {
     owner->terminate_requested.store(true, std::memory_order_release);
     return napi_ok;
 }
+
+napi_status NAPI_CDECL napi_v8_cancel_terminate_execution(napi_env env) {
+    if (env == nullptr || env->embed_owner == nullptr)
+        return napi_invalid_arg;
+    auto *owner = static_cast<napi_runtime>(env->embed_owner);
+    // Clear the terminate-request flag so the already-armed watchdog re-arms (returns false at its
+    // next checkpoint) instead of terminating — re-enabling the context for the next drive. Just an
+    // atomic store (no JSLock). Call on the owning thread after the runaway JS has unwound; no-op if
+    // no termination was pending.
+    owner->terminate_requested.store(false, std::memory_order_release);
+    return napi_ok;
+}
+
+napi_status NAPI_CDECL napi_v8_is_execution_terminating(napi_env env, bool *result) {
+    if (env == nullptr || env->embed_owner == nullptr || result == nullptr)
+        return napi_invalid_arg;
+    auto *owner = static_cast<napi_runtime>(env->embed_owner);
+    // A termination is pending from terminate_execution (flag set) until cancel clears it.
+    *result = owner->terminate_requested.load(std::memory_order_acquire);
+    return napi_ok;
+}

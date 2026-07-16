@@ -131,6 +131,7 @@
     napi_type_tag_object;
     napi_typeof;
     napi_unwrap;
+    napi_v8_cancel_terminate_execution;
     napi_v8_inspector_is_paused;
     napi_v8_inspector_pump_messages;
     napi_v8_inspector_set_pause_handler;
@@ -139,6 +140,7 @@
     napi_v8_inspector_stop;
     napi_v8_inspector_wait;
     napi_v8_inspector_wait_for_connection;
+    napi_v8_is_execution_terminating;
     napi_v8_run_event_loop_tasks;
     napi_v8_terminate_execution;
     napi_wrap;

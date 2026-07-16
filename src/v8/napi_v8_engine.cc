@@ -331,4 +331,28 @@ napi_status NAPI_CDECL napi_v8_terminate_execution(napi_env env) {
     return napi_ok;
 }
 
+napi_status NAPI_CDECL napi_v8_cancel_terminate_execution(napi_env env) {
+    if (env == nullptr || env->isolate == nullptr)
+        return napi_invalid_arg;
+    // Clears a pending TerminateExecution so the isolate is reusable for subsequent calls.
+    // Unlike terminate_execution (cross-thread by contract), this MUST be called on the
+    // isolate's OWN thread — the intended use is: after a runaway JS has been terminated and
+    // has unwound out to the C++ embedder boundary (e.g. RunFrame returns), the owning thread
+    // calls this to re-enable the isolate so the next frame/task runs. No-op if not currently
+    // terminating, so callers may invoke it unconditionally after each drive.
+    env->isolate->CancelTerminateExecution();
+    return napi_ok;
+}
+
+napi_status NAPI_CDECL napi_v8_is_execution_terminating(napi_env env, bool* result) {
+    if (env == nullptr || env->isolate == nullptr || result == nullptr)
+        return napi_invalid_arg;
+    // Whether a termination is currently in progress on this isolate (true between an armed
+    // TerminateExecution and the point the owning thread clears it via cancel). Call on the
+    // owning thread. Lets the embedder distinguish "JS finished normally" from "JS was killed
+    // by the watchdog" (→ report to host) after a drive returns.
+    *result = env->isolate->IsExecutionTerminating();
+    return napi_ok;
+}
+
 } // extern "C"

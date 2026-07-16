@@ -132,6 +132,7 @@
     napi_typeof;
     napi_unwrap;
     napi_v8_adopt_backing_store;
+    napi_v8_cancel_terminate_execution;
     napi_v8_deserialize;
     napi_v8_free_backing_store;
     napi_v8_free_serialized_data;
@@ -143,6 +144,7 @@
     napi_v8_inspector_stop;
     napi_v8_inspector_wait;
     napi_v8_inspector_wait_for_connection;
+    napi_v8_is_execution_terminating;
     napi_v8_run_event_loop_tasks;
     napi_v8_serialize;
     napi_v8_take_backing_store;

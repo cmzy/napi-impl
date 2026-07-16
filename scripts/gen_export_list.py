@@ -39,6 +39,12 @@ EMBEDDING_COMMON = [
     # backend implements it with its own mechanism (V8 TerminateExecution / JSC
     # execution-time-limit / Hermes async-break / QuickJS interrupt handler).
     "napi_v8_terminate_execution",
+    # Terminate-and-resume companions (embedding.h). cancel = clear a pending termination so the
+    # isolate/context is reusable (V8 CancelTerminateExecution / JSC clears the watchdog terminate
+    # flag → re-arm / Hermes best-effort); is_terminating reports whether a termination is pending.
+    # Cross-engine like terminate itself (must be called on the owning thread, unlike terminate).
+    "napi_v8_cancel_terminate_execution",
+    "napi_v8_is_execution_terminating",
     # node_api_* extensions we implement beyond js_native_api proper.
     "node_api_post_finalizer",
     # Fast-call surface (napi/fast_call.h). Cross-engine: V8 takes the real fast

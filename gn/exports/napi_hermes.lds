@@ -131,6 +131,8 @@
     napi_type_tag_object;
     napi_typeof;
     napi_unwrap;
+    napi_v8_cancel_terminate_execution;
+    napi_v8_is_execution_terminating;
     napi_v8_run_event_loop_tasks;
     napi_v8_terminate_execution;
     napi_wrap;

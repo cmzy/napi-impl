@@ -130,6 +130,7 @@ _napi_type_tag_object
 _napi_typeof
 _napi_unwrap
 _napi_v8_adopt_backing_store
+_napi_v8_cancel_terminate_execution
 _napi_v8_deserialize
 _napi_v8_free_backing_store
 _napi_v8_free_serialized_data
@@ -141,6 +142,7 @@ _napi_v8_inspector_start
 _napi_v8_inspector_stop
 _napi_v8_inspector_wait
 _napi_v8_inspector_wait_for_connection
+_napi_v8_is_execution_terminating
 _napi_v8_run_event_loop_tasks
 _napi_v8_serialize
 _napi_v8_take_backing_store

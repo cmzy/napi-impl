@@ -69,6 +69,28 @@ NAPI_EXTERN napi_status NAPI_CDECL napi_v8_run_event_loop_tasks(napi_env env);
 // (If the isolate is idle, this arms the flag so the next JS entry terminates immediately.)
 NAPI_EXTERN napi_status NAPI_CDECL napi_v8_terminate_execution(napi_env env);
 
+// Clears a pending termination so the JS engine is reusable for subsequent JS. Complements
+// napi_v8_terminate_execution to enable a **terminate-and-resume** watchdog (vs the
+// terminate-and-teardown used by worker/worklet): a monitor thread arms terminate_execution
+// when a drive (e.g. a rAF/timer callback) runs too long; after the runaway JS unwinds out to
+// the C++ embedder boundary and the drive returns, the engine's OWN thread calls this to
+// re-enable it so the next frame/task runs normally.
+// Cross-engine (each backend clears its own terminate mechanism): V8 →
+// Isolate::CancelTerminateExecution; JSC → clears the watchdog terminate-request flag so the
+// already-armed time-limit watchdog re-arms instead of terminating; Hermes → best-effort (its
+// async-break terminate has no persistent state to clear). **Call ONLY on the engine's owning
+// thread** (unlike terminate, which is cross-thread). No-op if not currently terminating, so it
+// is safe to call unconditionally after each drive.
+NAPI_EXTERN napi_status NAPI_CDECL napi_v8_cancel_terminate_execution(napi_env env);
+
+// Reports whether a termination is currently pending on the env (true from an armed
+// terminate_execution until the owning thread clears it via cancel): V8 →
+// Isolate::IsExecutionTerminating; JSC → the terminate-request flag; Hermes → always false
+// (best-effort). Call on the owning thread. Lets the embedder tell "JS finished normally" from
+// "JS was killed by the watchdog" after a drive returns (→ report to the host). `result`
+// receives the boolean.
+NAPI_EXTERN napi_status NAPI_CDECL napi_v8_is_execution_terminating(napi_env env, bool* result);
+
 #ifdef __cplusplus
 }  // extern "C"
 #endif

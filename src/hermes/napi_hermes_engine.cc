@@ -318,3 +318,22 @@ napi_status NAPI_CDECL napi_v8_terminate_execution(napi_env env) {
     owner->runtime->triggerTimeoutAsyncBreak();
     return napi_ok;
 }
+
+napi_status NAPI_CDECL napi_v8_cancel_terminate_execution(napi_env env) {
+    // Best-effort no-op (Hermes is not a production terminate engine; V8/JSC are). terminate here
+    // fires a transient timeout async-break, not a persistent host-level terminate flag like JSC —
+    // there is nothing to clear at the embedder level. Moreover the bare embedding does not enable
+    // async-break checks (see napi_v8_terminate_execution), so the request never fires on a
+    // check-free hot loop and cannot linger into a later drive. Validate env for a consistent status.
+    if (env == nullptr)
+        return napi_invalid_arg;
+    return napi_ok;
+}
+
+napi_status NAPI_CDECL napi_v8_is_execution_terminating(napi_env env, bool *result) {
+    if (env == nullptr || result == nullptr)
+        return napi_invalid_arg;
+    // Hermes exposes no persistent terminate-pending state at the embedder level (best-effort).
+    *result = false;
+    return napi_ok;
+}

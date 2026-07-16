@@ -129,6 +129,8 @@ _napi_throw_type_error
 _napi_type_tag_object
 _napi_typeof
 _napi_unwrap
+_napi_v8_cancel_terminate_execution
+_napi_v8_is_execution_terminating
 _napi_v8_run_event_loop_tasks
 _napi_v8_terminate_execution
 _napi_wrap
