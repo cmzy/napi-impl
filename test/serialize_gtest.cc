@@ -203,6 +203,64 @@ TEST_F(NapiExtras, BackingStoreTransferCrossIsolateZeroCopy) {
     napi_destroy_runtime(rt2);
 }
 
+// Regression: the SOURCE isolate is destroyed BEFORE the destination. A zero-copy
+// backing store records the allocator that created it and frees the bytes through
+// that allocator's virtual Free() in ~BackingStore. With a PER-RUNTIME allocator,
+// destroying the source runtime frees that allocator while the destination still
+// owns the transferred backing; the destination's later teardown (ArrayBufferSweeper
+// -> ~BackingStore) then frees through the freed allocator -> SEGV. A process-shared
+// allocator keeps the pointer valid across isolate lifetimes. This is the exact
+// worker->parent postMessage-transfer shape at engine shutdown (the worker isolate
+// is reaped first, the main isolate is torn down after while still holding the
+// transferred ArrayBuffer). Pre-fix this test SEGVs in the final destroy; post-fix
+// it completes cleanly.
+TEST_F(NapiExtras, BackingStoreTransferSurvivesSourceIsolateDestroyedFirst) {
+    // Source runtime/isolate: create an ArrayBuffer and take its backing store.
+    napi_runtime rt_src = nullptr;
+    ASSERT_EQ(napi_create_runtime(platform_, &rt_src), napi_ok);
+    napi_env env_src = nullptr;
+    ASSERT_EQ(napi_create_env(rt_src, &env_src), napi_ok);
+    napi_handle_scope scope_src = nullptr;
+    ASSERT_EQ(napi_open_handle_scope(env_src, &scope_src), napi_ok);
+    napi_value ab_src = nullptr;
+    {
+        napi_value src = nullptr;
+        napi_create_string_utf8(env_src, "(() => { const a = new Uint8Array([9,8,7,6]); return a.buffer; })()",
+                                NAPI_AUTO_LENGTH, &src);
+        ASSERT_EQ(napi_run_script(env_src, src, &ab_src), napi_ok);
+    }
+    napi_v8_backing_store store = nullptr;
+    ASSERT_EQ(napi_v8_take_backing_store(env_src, ab_src, &store), napi_ok);
+
+    // Destination runtime/isolate adopts the backing (cross-isolate, zero copy).
+    napi_runtime rt_dst = nullptr;
+    ASSERT_EQ(napi_create_runtime(platform_, &rt_dst), napi_ok);
+    napi_env env_dst = nullptr;
+    ASSERT_EQ(napi_create_env(rt_dst, &env_dst), napi_ok);
+    napi_handle_scope scope_dst = nullptr;
+    ASSERT_EQ(napi_open_handle_scope(env_dst, &scope_dst), napi_ok);
+    napi_value ab_dst = nullptr;
+    ASSERT_EQ(napi_v8_adopt_backing_store(env_dst, store, &ab_dst), napi_ok);
+
+    // Destroy the SOURCE first — frees a per-runtime allocator in the buggy build.
+    napi_close_handle_scope(env_src, scope_src);
+    napi_destroy_env(env_src);
+    napi_destroy_runtime(rt_src);
+
+    // The adopted buffer is still valid and readable in the destination.
+    void *data = nullptr;
+    size_t len = 0;
+    ASSERT_EQ(napi_get_arraybuffer_info(env_dst, ab_dst, &data, &len), napi_ok);
+    EXPECT_EQ(len, 4u);
+    EXPECT_EQ(static_cast<uint8_t *>(data)[0], 9u);
+
+    // Destroy the destination — its ArrayBufferSweeper frees the transferred backing
+    // through the recorded allocator. Buggy: SEGV (source allocator gone). Fixed: clean.
+    napi_close_handle_scope(env_dst, scope_dst);
+    napi_destroy_env(env_dst);
+    napi_destroy_runtime(rt_dst);
+}
+
 // A large buffer proves the win is real (no O(n) copy): still pointer-identical.
 TEST_F(NapiExtras, BackingStoreTransferLargeIsZeroCopy) {
     napi_value ab = Run("new ArrayBuffer(4 * 1024 * 1024)");  // 4 MiB

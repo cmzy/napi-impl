@@ -28,8 +28,25 @@ struct napi_platform__ {
 struct napi_runtime__ {
     v8::Isolate *isolate = nullptr;
     v8::Isolate::CreateParams create_params;
-    std::unique_ptr<v8::ArrayBuffer::Allocator> allocator;
 };
+
+// Process-shared ArrayBuffer allocator. A zero-copy transferred ArrayBuffer's V8
+// BackingStore records the allocator that created it and calls that allocator's
+// virtual Free() on destruction. Because backing stores are transferred ACROSS
+// isolates (e.g. a worker isolate postMessage-transfers an ArrayBuffer to the main
+// isolate), a per-runtime allocator dangles once the SOURCE runtime is destroyed
+// while a DESTINATION runtime still owns the transferred backing: the destination's
+// teardown (ArrayBufferSweeper → ~BackingStore) then frees through the freed
+// allocator → SEGV. A single process-shared, stateless (malloc/free) allocator
+// outlives every isolate, so the recorded allocator pointer is always valid. Set via
+// CreateParams::array_buffer_allocator_shared so every isolate holds a ref to the one
+// instance. Thread-safe one-time init (function-local static); never torn down
+// (stateless, process-lifetime — same discipline as the singleton platform above).
+static std::shared_ptr<v8::ArrayBuffer::Allocator> SharedArrayBufferAllocator() {
+    static std::shared_ptr<v8::ArrayBuffer::Allocator> g_alloc(
+            v8::ArrayBuffer::Allocator::NewDefaultAllocator());
+    return g_alloc;
+}
 
 // Process-singleton V8 platform. V8::Initialize/InitializePlatform are
 // once-per-process (a second call aborts), so napi_create_platform is made
@@ -218,8 +235,9 @@ napi_status NAPI_CDECL napi_create_runtime(napi_platform platform, napi_runtime 
     if (platform == nullptr || result == nullptr)
         return napi_invalid_arg;
     auto *r = new napi_runtime__();
-    r->allocator.reset(v8::ArrayBuffer::Allocator::NewDefaultAllocator());
-    r->create_params.array_buffer_allocator = r->allocator.get();
+    // Process-shared allocator (not per-runtime) so cross-isolate transferred backing
+    // stores never free through a dead source-isolate allocator (see comment above).
+    r->create_params.array_buffer_allocator_shared = SharedArrayBufferAllocator();
     r->isolate = v8::Isolate::New(r->create_params);
     if (r->isolate == nullptr) {
         delete r;
