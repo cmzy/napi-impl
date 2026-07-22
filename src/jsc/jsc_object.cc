@@ -835,6 +835,20 @@ bool AttachHolder(napi_env env, JSObjectRef anchor, JSValueRef key, void* data, 
         // The holder is now unreferenced; it will be GC'd and its st freed.
         return false;
     }
+    // A non-extensible / frozen anchor (Object.freeze / seal) *silently* rejects
+    // the new property: JSC's [[DefineOwnProperty]] returns false without setting
+    // `exc`. We must not report success — the holder would be orphaned (its only
+    // referrer gone → GC'd → ExternalFinalize clears every attached RefControl),
+    // so a strong (refcount>0) reference to a frozen object would read back NULL
+    // after GC despite its JSValueProtect. Verify the property actually landed; if
+    // not, fail so MakeReference falls back to a plain strong protect (non-weakable,
+    // which never empties). Surfaced by WebCrypto CryptoKey.algorithm — a frozen
+    // [SameObject] object held only by a napi_ref. AME-JSC-FROZEN-REF-FIX
+    JSValueRef back = JSObjectGetPropertyForKey(env->ctx, anchor, key, nullptr);
+    if (back != holder) {
+        // The holder is now unreferenced; it will be GC'd and its st freed.
+        return false;
+    }
     return true;
 }
 

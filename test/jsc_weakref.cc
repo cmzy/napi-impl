@@ -93,6 +93,22 @@ __attribute__((noinline)) napi_ref make_ref(napi_env env, uint32_t count) {
   return ref;
 }
 
+// Like make_ref but the target is Object.freeze'd (non-extensible) before the
+// reference is taken — the weak-ref holder cannot be attached to it. Models a
+// frozen [SameObject] attribute (e.g. WebCrypto CryptoKey.algorithm) held only
+// by a napi_ref.
+__attribute__((noinline)) napi_ref make_ref_frozen(napi_env env, uint32_t count) {
+  napi_handle_scope scope = nullptr;
+  napi_open_handle_scope(env, &scope);
+  napi_value obj = nullptr;
+  napi_create_object(env, &obj);
+  napi_object_freeze(env, obj);
+  napi_ref ref = nullptr;
+  napi_create_reference(env, obj, count, &ref);
+  napi_close_handle_scope(env, scope);
+  return ref;
+}
+
 // Attach a finalizer via napi_add_finalizer (not napi_wrap); object lives only
 // in this popped frame so it is collectible after return.
 __attribute__((noinline)) napi_ref make_with_finalizer(napi_env env) {
@@ -119,6 +135,22 @@ TEST_F(NapiExtras, WrapFinalizerAndWeakRef) {
   EXPECT_TRUE(g_finalized == 1) << "A: wrap finalizer should have run exactly once after GC";
   EXPECT_TRUE(ref_is_empty(env_, wrap_ref)) << "A: weak wrap ref should read empty after collection";
   ASSERT_EQ(napi_delete_reference(env_, wrap_ref), napi_ok);
+}
+
+// --- B2. strong reference to a FROZEN object survives GC ------------------
+// Regression for AME-JSC-FROZEN-REF-FIX: a refcount-1 ref to a non-extensible
+// (Object.freeze) target must survive GC just like any other object. The weak-ref
+// holder can't be attached to a frozen target — JSC's [[DefineOwnProperty]]
+// silently rejects it *without* setting an exception. If AttachHolder wrongly
+// reports success, the holder is orphaned (unreferenced → GC'd → its finalizer
+// clears the RefControl), so the strong ref reads back NULL despite JSValueProtect.
+// Surfaced by WebCrypto: CryptoKey.algorithm is a frozen [SameObject] object held
+// only by a napi_ref; long-lived keys read .algorithm == null after GC pressure.
+TEST_F(NapiExtras, StrongReferenceToFrozenObjectSurvivesGC) {
+  napi_ref strong = make_ref_frozen(env_, 1);  // refcount 1 => strong, target frozen
+  force_gc(env_);
+  EXPECT_TRUE(!ref_is_empty(env_, strong)) << "B2: refcount-1 ref to a frozen object must survive GC";
+  ASSERT_EQ(napi_delete_reference(env_, strong), napi_ok);
 }
 
 // --- B. strong reference pins across GC, then releases -------------------
